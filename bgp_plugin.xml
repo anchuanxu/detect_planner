@@ -1,0 +1,7 @@
+<library path="lib/libdetect_planner">
+  <class name="detect_planner/DetectPlanner" type="detect_planner::DetectPlanner" base_class_type="nav_core::BaseGlobalPlanner">
+    <description>
+      A small area navigation method
+    </description>
+  </class>
+</library>

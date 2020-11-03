@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format2.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="2">
+    <name>detect_planner</name>
+    <version>0.1.0</version>
+    <description>
+
+    This package is a special navigation package used for small scope exploration navigation of the robot, mainly
+    suitable for the scenario: entering the elevator.
+
+    </description>
+    <author>chuanxu An</author>
+    <author>chuanxu@iscas.ac.cn</author>
+    <maintainer email="chuanxu@iscas.ac.cn">chuanxu An</maintainer>
+    <license>BSD</license>
+    <url>http://wiki.ros.org/detect_planner</url>
+
+    <buildtool_depend>catkin</buildtool_depend>
+
+    <build_depend>tf2_geometry_msgs</build_depend>
+
+    <depend>base_local_planner</depend>
+    <depend>costmap_2d</depend>
+    <depend>eigen</depend>
+    <depend>nav_core</depend>
+    <depend>pluginlib</depend>
+    <depend>roscpp</depend>
+    <depend>tf2</depend>
+    <depend>tf2_ros</depend>
+
+    <export>
+        <nav_core plugin="${prefix}/bgp_plugin.xml" />
+    </export>
+</package>
+
+
