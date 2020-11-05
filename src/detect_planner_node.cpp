@@ -5,11 +5,21 @@ int main(int argc, char** argv){
 
   ros::init(argc, argv, "detect_planner_node");
 
-  bool done = false;
-  detect_planner::DetectPlanner detect_plan;
-  //detect_plan.makePlan();
+  std::string name;
 
-  ros::spin();
+  costmap_2d::Costmap2DROS* costmap_ros;
+
+  detect_planner::DetectPlanner detect_plan(name,costmap_ros);
+
+//  detect_plan.initialize(name,  costmap_ros);
+  detect_plan.runPlan();
+
+  while(ros::ok())
+  {
+    ROS_INFO("runPlan done");
+    ros::Duration(1).sleep();
+  }
+//  ros::spin();
 
   return(0);
 }

@@ -56,13 +56,13 @@ namespace detect_planner {
 
   void DetectPlanner::initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros){
     if(!initialized_){
-      ros::NodeHandle private_nh("~/");
-      laser_sub_ = private_nh.subscribe<sensor_msgs::LaserScan>("/scan",1,boost::bind(&DetectPlanner::scanCallback,this,_1));
-      odom_sub_ = private_nh.subscribe<nav_msgs::Odometry>("/odom",1,boost::bind(&DetectPlanner::odomCallback,this,_1));
-      vel_pub_ = private_nh.advertise<geometry_msgs::Twist>("/cmd_vel",1);
+      nh_ = new ros::NodeHandle("~/");
+      laser_sub_ = nh_->subscribe<sensor_msgs::LaserScan>("/scan",1,boost::bind(&DetectPlanner::scanCallback,this,_1));
+      odom_sub_ = nh_->subscribe<nav_msgs::Odometry>("/odom",1,boost::bind(&DetectPlanner::odomCallback,this,_1));
+      vel_pub_ = nh_->advertise<geometry_msgs::Twist>("/cmd_vel",1);
 
-      private_nh.param("detect_planner/base_frame", base_frame_, std::string("base_link"));
-      private_nh.param("detect_planner/base_frame", laser_frame_, std::string("laser"));
+      nh_->param("detect_planner/base_frame", base_frame_, std::string("base_link"));
+      nh_->param("detect_planner/base_frame", laser_frame_, std::string("laser"));
 
       laser_sub_.shutdown();
       odom_sub_.shutdown();
@@ -70,7 +70,7 @@ namespace detect_planner {
       this->laser_data_.header.stamp = ros::Time::now();
       getLaserTobaselinkTF(laser_frame_, base_frame_);
       move_base_cancel_ = false;
-      pi = 3.1415926;
+      pi = 3.55;
 
       initialized_ = true;
     }
@@ -79,11 +79,22 @@ namespace detect_planner {
   }
 
   DetectPlanner::~DetectPlanner()
-  {}
-
+  {
+    if(nh_)
+    {
+      delete nh_;
+      nh_ = nullptr;
+    }
+  }
 
   bool DetectPlanner::makePlan(const geometry_msgs::PoseStamped& start,
-                               const geometry_msgs::PoseStamped& goal, std::vector<geometry_msgs::PoseStamped>& plan){
+                               const geometry_msgs::PoseStamped& goal, std::vector<geometry_msgs::PoseStamped>& plan)
+  {
+    std::cout << "Hello world!" << std::endl;
+    return true;
+  }
+
+  bool DetectPlanner::runPlan(){
 
     ROS_INFO("---detect planner started!---");
 
@@ -93,12 +104,14 @@ namespace detect_planner {
     }
 
     //订阅传感器话题
-    ros::NodeHandle private_nh("~/");
-    laser_sub_ = private_nh.subscribe<sensor_msgs::LaserScan>("/scan",1,boost::bind(&DetectPlanner::scanCallback,this,_1));
-    odom_sub_ = private_nh.subscribe<nav_msgs::Odometry>("/odom",1,boost::bind(&DetectPlanner::odomCallback,this,_1));
+//    ros::NodeHandle private_nh("~/");
+    laser_sub_ = nh_->subscribe<sensor_msgs::LaserScan>("/scan",1,boost::bind(&DetectPlanner::scanCallback,this,_1));
+    odom_sub_ = nh_->subscribe<nav_msgs::Odometry>("/odom",1,boost::bind(&DetectPlanner::odomCallback,this,_1));
+
+    ros::Duration(2).sleep();
 
     //订阅话题进行持续判断是否有中断请求
-    mbc_sub_ = private_nh.subscribe<actionlib_msgs::GoalID>("/move_base/cancel",1,
+    mbc_sub_ = nh_->subscribe<actionlib_msgs::GoalID>("/move_base/cancel",1,
                                         boost::bind(&DetectPlanner::movebaseCancelCallback,this,_1));
     if(move_base_cancel_ == true)
     {
@@ -126,17 +139,19 @@ namespace detect_planner {
        {
          laser_sub_.shutdown();
          odom_sub_.shutdown();
+         ROS_ERROR("odom no data then return!");
          return false;
        }
-       ros::Duration(1).sleep();
+       ros::Duration(0.05).sleep();
        this->getOdomData(odom_data);
        robot_start_x = odom_data.pose.pose.position.x;
        robot_start_y = odom_data.pose.pose.position.y;
        robot_start_t = tf::getYaw(odom_data.pose.pose.orientation);
+       ros::spinOnce();
     }
     double robot_current_x = robot_start_x;
     double robot_current_y = robot_start_y;
-    //double robot_current_t = robot_start_t; //用odom计算角度时用到。
+   // double robot_current_t = robot_start_t; //用odom计算角度时用到。
     double distance = 0.0;
 
 
@@ -155,6 +170,7 @@ namespace detect_planner {
       }
       ros::Duration(1).sleep();
       this->getLaserPoint(laser_point);//使用回调函数赋值
+      ros::spinOnce();
     }
 
     //部分变量声明和初始化
@@ -174,7 +190,7 @@ namespace detect_planner {
       go_forward = HaveObstacles(laser_point,0.4,0.35);
       if(go_forward == false)
       {
-        ROS_INFO("请让一让");
+        ROS_INFO("please move your body");
         end_time = ros::Time::now().sec;
         interval_time = end_time - start_time;
         if(interval_time > 15)
@@ -187,21 +203,30 @@ namespace detect_planner {
       }
 
       //第一部分 行走至电梯里
-      while(go_forward == true && distance < 0.85)
+
+      while(ros::ok() && go_forward == true && distance < 0.85)
       {
         cmd_vel.linear.x = 0.1;
         cmd_vel.angular.z = 0;
         this->vel_pub_.publish(cmd_vel);
-
         this->getLaserPoint(laser_point);
-        go_forward = HaveObstacles(laser_point,0.1,0.35);
+        go_forward = HaveObstacles(laser_point,0.4,0.35);
+
         if(go_forward == false)
         {
           publishZeroVelocity();
           //TODO:播放语音，请让一让，让可爱的机器人进去吧；
-          ros::Duration(5).sleep();
+//          ros::Rate r(20);
+//          uint8_t count = 0;
+//          while(ros::ok() && count++ < 22)
+//          {
+//            r.sleep();
+//            ros::spinOnce();
+//          }
+          ros::Duration(5).sleep();//这么写无法更新后续的回调数据，需要重写
+          ROS_INFO("1 have sleep 5s !");
           this->getLaserPoint(laser_point);
-          go_forward = HaveObstacles(laser_point,0.1,0.35);
+          go_forward = HaveObstacles(laser_point,0.4,0.35);
           if(go_forward == false)
           {
             publishZeroVelocity();
@@ -214,7 +239,8 @@ namespace detect_planner {
             double diff_y = robot_current_y - robot_start_y;
 
             distance = sqrt(diff_x*diff_x+diff_y*diff_y);
-            ROS_INFO("无法进入电梯，返回等待点，等待下一次电梯到达");
+            std::cout << "distance = " << distance << std::endl;
+            ROS_INFO("return origin over");
             goback(distance);
             return false;//退出程序
           }
@@ -228,16 +254,18 @@ namespace detect_planner {
         double diff_y = robot_current_y - robot_start_y;
 
         distance = sqrt(diff_x*diff_x+diff_y*diff_y);
+        std::cout << "distance = " << distance << std::endl;
         if(distance > 0.83)
         {
           intoDone = true;
         }
+        ros::spinOnce();
       }
       //第二部分电梯内小范围前进
-      while(go_forward == true && distance < 1.2) //跟电梯的长宽及障碍物有关
+      while(ros::ok() && go_forward == true && distance < 1.0) //跟电梯的长宽及障碍物有关
       {
         this->getLaserPoint(laser_point);
-        go_forward = HaveObstacles(laser_point,0.1,0.35);
+        go_forward = HaveObstacles(laser_point,0.3,0.35);
         if(go_forward == true)
         {
           cmd_vel.linear.x = 0.1;
@@ -245,11 +273,13 @@ namespace detect_planner {
           this->vel_pub_.publish(cmd_vel);
 
           this->getLaserPoint(laser_point);
-          go_forward = HaveObstacles(laser_point,0.1,0.35);
+          go_forward = HaveObstacles(laser_point,0.3,0.35);
           if(go_forward == false)
           {
+            ROS_INFO("1 have obs !");
             publishZeroVelocity();
             intoDone = true;
+            ROS_INFO("i am stop here!");
             break;//实在无法前进了，就地停止
           }
           //更新一下已走的距离
@@ -261,22 +291,38 @@ namespace detect_planner {
           double diff_y = robot_current_y - robot_start_y;
 
           distance = sqrt(diff_x*diff_x+diff_y*diff_y);
+          std::cout << "part 2 distance = " << distance << std::endl;
+          if(distance >= 1.0)
+          {
+            publishZeroVelocity();
+            intoDone = true;
+            ROS_INFO("test 1");
+            go_forward = false;
+            break;
+          }
         }
-        else {
-           intoDone = true;
-           break;
-        }
+//        else {
+//           intoDone = true;
+//           break;
+//        }
+        ros::spinOnce();
       }
+      std::cout << "intoDone = " << intoDone << std::endl;
+      std::cout << "go_forward = " << go_forward << std::endl;
 
       //第三部分　旋转180度
-      if(intoDone == true && go_forward == false)
+      double_t dis_angle = 0.0;
+      while(ros::ok() && intoDone == true && go_forward == false)
       {
+        ROS_INFO("turn my body");
         turnAngle(180);
-        ROS_INFO("我已经准备好啦！开始开动电梯吧！");
+        publishZeroVelocity();
+        ROS_INFO("let's go");
         return true;
         //TODO:发送关闭电梯门指令
       }
     }
+    ros::spinOnce();
 }
   bool DetectPlanner::HaveObstacles(std::vector<std::pair<double, double> > sensor_point, double x, double y)
   {
@@ -297,6 +343,27 @@ namespace detect_planner {
     cmd_vel.angular.z = 0;
     this->vel_pub_.publish(cmd_vel);
   }
+  void DetectPlanner::turnAngle(double angle)
+  {
+    ros::Rate r(10);
+    double angle_speed = 0.2;
+    double angle_duration = (angle / 360 * 2 * pi) / angle_speed;
+    int ticks = int(angle_duration * 10);
+    geometry_msgs::Twist cmd_vel;
+    cmd_vel.linear.x = 0.0;
+    cmd_vel.linear.y = 0.0;
+    while(ticks > 0)
+    {
+        ticks --;
+        cmd_vel.angular.z = angle_speed;
+        vel_pub_.publish(cmd_vel);
+        r.sleep();
+    }
+    cmd_vel.angular.z = 0.0;
+    vel_pub_.publish(cmd_vel);
+    return ;
+  }
+
   void DetectPlanner::goback(double distance)
   {
     ros::Rate r(10);
@@ -316,26 +383,6 @@ namespace detect_planner {
     }
     cmd_vel.linear.x = 0.0;
     vel_pub_.publish(cmd_vel);
-  }
-  void DetectPlanner::turnAngle(double angle)
-  {
-    ros::Rate r(10);
-    double angle_speed = 0.2;
-    double angle_duration = (angle / 360 * 2 * pi) / angle_speed;
-    int ticks = int(angle_duration * 10);
-    geometry_msgs::Twist cmd_vel;
-    cmd_vel.linear.x = 0.0;
-    cmd_vel.linear.y = 0.0;
-    while(ticks > 0)
-    {
-        ticks --;
-        cmd_vel.angular.z = angle_speed;
-        vel_pub_.publish(cmd_vel);
-        r.sleep();
-    }
-    cmd_vel.angular.z = 0.0;
-    vel_pub_.publish(cmd_vel);
-    return;
   }
   void DetectPlanner::movebaseCancelCallback(const actionlib_msgs::GoalID::ConstPtr &msg)
   {
