@@ -2,59 +2,24 @@
 *
 * Software License Agreement (BSD License)
 *
-*  Copyright (c) 2008, Willow Garage, Inc.
+*  Copyright (c) 2020, Chuanxu An, Inc.
 *  All rights reserved.
 *
-*  Redistribution and use in source and binary forms, with or without
-*  modification, are permitted provided that the following conditions
-*  are met:
-*
-*   * Redistributions of source code must retain the above copyright
-*     notice, this list of conditions and the following disclaimer.
-*   * Redistributions in binary form must reproduce the above
-*     copyright notice, this list of conditions and the following
-*     disclaimer in the documentation and/or other materials provided
-*     with the distribution.
-*   * Neither the name of Willow Garage, Inc. nor the names of its
-*     contributors may be used to endorse or promote products derived
-*     from this software without specific prior written permission.
-*
-*  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-*  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-*  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS
-*  FOR A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE
-*  COPYRIGHT OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT,
-*  INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING,
-*  BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
-*  LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
-*  CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT
-*  LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN
-*  ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
-*  POSSIBILITY OF SUCH DAMAGE.
-*
-* Authors: Eitan Marder-Eppstein, Sachin Chitta
 *********************************************************************/
 #include <detect_planner/detect_planner.h>
-#include <pluginlib/class_list_macros.h>
 #include <tf2/convert.h>
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf/transform_listener.h>
 
-//register this planner as a BaseGlobalPlanner plugin
-PLUGINLIB_EXPORT_CLASS(detect_planner::DetectPlanner, nav_core::BaseGlobalPlanner)
-
 namespace detect_planner {
+
   DetectPlanner::DetectPlanner()
-  :initialized_(false){
-  }
-
-  DetectPlanner::DetectPlanner(std::string name, costmap_2d::Costmap2DROS* costmap_ros)
   : initialized_(false){
-    initialize(name, costmap_ros);
+    initialize();
   }
 
-  void DetectPlanner::initialize(std::string name, costmap_2d::Costmap2DROS* costmap_ros){
+  void DetectPlanner::initialize(){
     if(!initialized_){
       nh_ = new ros::NodeHandle("~/");
       laser_sub_ = nh_->subscribe<sensor_msgs::LaserScan>("/scan",1,boost::bind(&DetectPlanner::scanCallback,this,_1));
@@ -87,13 +52,6 @@ namespace detect_planner {
     }
   }
 
-  bool DetectPlanner::makePlan(const geometry_msgs::PoseStamped& start,
-                               const geometry_msgs::PoseStamped& goal, std::vector<geometry_msgs::PoseStamped>& plan)
-  {
-    std::cout << "Hello world!" << std::endl;
-    return true;
-  }
-
   bool DetectPlanner::runPlan(){
 
     ROS_INFO("---detect planner started!---");
@@ -104,11 +62,11 @@ namespace detect_planner {
     }
 
     //订阅传感器话题
-//    ros::NodeHandle private_nh("~/");
+    //ros::NodeHandle private_nh("~/");
     laser_sub_ = nh_->subscribe<sensor_msgs::LaserScan>("/scan",1,boost::bind(&DetectPlanner::scanCallback,this,_1));
     odom_sub_ = nh_->subscribe<nav_msgs::Odometry>("/odom",1,boost::bind(&DetectPlanner::odomCallback,this,_1));
 
-    ros::Duration(2).sleep();
+    //ros::Duration(2).sleep();
 
     //订阅话题进行持续判断是否有中断请求
     mbc_sub_ = nh_->subscribe<actionlib_msgs::GoalID>("/move_base/cancel",1,
@@ -216,14 +174,13 @@ namespace detect_planner {
         {
           publishZeroVelocity();
           //TODO:播放语音，请让一让，让可爱的机器人进去吧；
-//          ros::Rate r(20);
-//          uint8_t count = 0;
-//          while(ros::ok() && count++ < 22)
-//          {
-//            r.sleep();
-//            ros::spinOnce();
-//          }
-          ros::Duration(5).sleep();//这么写无法更新后续的回调数据，需要重写
+          ros::Rate r(20);
+          uint8_t count = 0;
+          while(ros::ok() && count++ < 100)
+          {
+            r.sleep();
+            ros::spinOnce();
+          }
           ROS_INFO("1 have sleep 5s !");
           this->getLaserPoint(laser_point);
           go_forward = HaveObstacles(laser_point,0.4,0.35);
@@ -241,7 +198,7 @@ namespace detect_planner {
             distance = sqrt(diff_x*diff_x+diff_y*diff_y);
             std::cout << "distance = " << distance << std::endl;
             ROS_INFO("return origin over");
-            goback(distance);
+            goback((distance + 0.01));
             return false;//退出程序
           }
         }
@@ -301,17 +258,12 @@ namespace detect_planner {
             break;
           }
         }
-//        else {
-//           intoDone = true;
-//           break;
-//        }
         ros::spinOnce();
       }
       std::cout << "intoDone = " << intoDone << std::endl;
       std::cout << "go_forward = " << go_forward << std::endl;
 
       //第三部分　旋转180度
-      double_t dis_angle = 0.0;
       while(ros::ok() && intoDone == true && go_forward == false)
       {
         ROS_INFO("turn my body");
@@ -363,7 +315,6 @@ namespace detect_planner {
     vel_pub_.publish(cmd_vel);
     return ;
   }
-
   void DetectPlanner::goback(double distance)
   {
     ros::Rate r(10);
