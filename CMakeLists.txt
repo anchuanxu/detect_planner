@@ -60,8 +60,5 @@ install(DIRECTORY include/${PROJECT_NAME}/
   PATTERN ".svn" EXCLUDE
 )
 
-install(FILES bgp_plugin.xml
-    DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}
-)
 
 

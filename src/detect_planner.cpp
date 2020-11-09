@@ -5,6 +5,7 @@
 *  Copyright (c) 2020, Chuanxu An, Inc.
 *  All rights reserved.
 *
+*  Author: Chuanxu An
 *********************************************************************/
 #include <detect_planner/detect_planner.h>
 #include <tf2/convert.h>

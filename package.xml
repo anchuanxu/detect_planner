@@ -28,9 +28,6 @@
     <depend>tf2</depend>
     <depend>tf2_ros</depend>
 
-    <export>
-        <nav_core plugin="${prefix}/bgp_plugin.xml" />
-    </export>
 </package>
 
 
