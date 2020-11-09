@@ -1,2 +1,5 @@
 # detect_planner
-A small area navigation method.
+
+一个用于点对点的导航逻辑
+
+
