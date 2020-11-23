@@ -162,14 +162,13 @@ namespace detect_planner {
     angle_diff = alpha - global_angle;
     std::cout << "angle_diff = " << angle_diff << std::endl;
     double temp;
-    ROS_INFO("angle correct start");
+    ROS_INFO("Robot initial posture correction start");
     while (ros::ok() && fabs(angle_diff) > 0.05) {
-      cmd_vel.angular.z =  (angle_diff / 5.0);
+      cmd_vel.angular.z =  (angle_diff / 2.0);
       this->vel_pub_.publish(cmd_vel);
 
       //更新angle_diff
       temp = global_angle;
-      ros::Duration(1).sleep();
       this->getCartoPose(carto_data);
       global_pose = carto_data.pose;
       x_diff = goal_pose.position.x - global_pose.position.x;
@@ -178,12 +177,12 @@ namespace detect_planner {
       alpha = std::atan2(y_diff, x_diff);//路径直线的夹角
       global_angle = tf::getYaw(carto_data.pose.orientation);//机器人本身的朝向角
       angle_diff = alpha - global_angle;
-      std::cout << "part2 angle_diff = " << angle_diff << std::endl;
+      std::cout << "p0 angle_diff = " << angle_diff << std::endl;
       ros::spinOnce();
     }
-    ROS_INFO("angle correct end");
     cmd_vel.angular.z =  0;
     this->vel_pub_.publish(cmd_vel);
+    ROS_INFO("Robot initial posture correction end");
 
     //进入循环，直行逻辑开始
     while(ros::ok())
@@ -206,11 +205,29 @@ namespace detect_planner {
 
       //第一部分 行走至电梯里
 
-      while(ros::ok() && go_forward == true && distance < 0.85)
+      while(ros::ok() && go_forward == true && distance < 1.2)
       {
+        if(fabs(angle_diff) > 0.01)
+        {
+          cmd_vel.angular.z = angle_diff;
+        }
+        else {
+          cmd_vel.angular.z = 0;
+        }
         cmd_vel.linear.x = 0.1;
-        cmd_vel.angular.z = 0;
         this->vel_pub_.publish(cmd_vel);
+
+        //更新angle_diff
+        temp = global_angle;
+        this->getCartoPose(carto_data);
+        global_pose = carto_data.pose;
+        x_diff = goal_pose.position.x - global_pose.position.x;
+        y_diff = goal_pose.position.y - global_pose.position.y;
+        alpha = std::atan2(y_diff, x_diff);//路径直线的夹角
+        global_angle = tf::getYaw(carto_data.pose.orientation);//机器人本身的朝向角
+        angle_diff = alpha - global_angle;
+        std::cout << "p1 angle_diff = " << angle_diff << std::endl;
+
         this->getLaserPoint(laser_point);
         go_forward = HaveObstacles(laser_point,0.4,0.35);
 
@@ -263,14 +280,22 @@ namespace detect_planner {
         ros::spinOnce();
       }
       //第二部分电梯内小范围前进
-      while(ros::ok() && go_forward == true && distance < 1.0) //跟电梯的长宽及障碍物有关
+      while(ros::ok() && go_forward == true && distance < 1.6) //跟电梯的长宽及障碍物有关
       {
+        if(fabs(angle_diff) > 0.01)
+        {
+          cmd_vel.angular.z = angle_diff;
+        }
+        else {
+          cmd_vel.angular.z = 0;
+        }
+
+
         this->getLaserPoint(laser_point);
         go_forward = HaveObstacles(laser_point,0.3,0.35);
         if(go_forward == true)
         {
           cmd_vel.linear.x = 0.1;
-          cmd_vel.angular.z = 0;
           this->vel_pub_.publish(cmd_vel);
 
           this->getLaserPoint(laser_point);
@@ -293,7 +318,7 @@ namespace detect_planner {
 
           distance = sqrt(diff_x*diff_x+diff_y*diff_y);
           std::cout << "part 2 distance = " << distance << std::endl;
-          if(distance >= 1.0)
+          if(distance >= 1.6)
           {
             publishZeroVelocity();
             intoDone = true;
@@ -302,6 +327,19 @@ namespace detect_planner {
             break;
           }
         }
+
+        //更新angle_diff
+        temp = global_angle;
+        //ros::Duration(1).sleep();
+        this->getCartoPose(carto_data);
+        global_pose = carto_data.pose;
+        x_diff = goal_pose.position.x - global_pose.position.x;
+        y_diff = goal_pose.position.y - global_pose.position.y;
+        alpha = std::atan2(y_diff, x_diff);//路径直线的夹角
+        global_angle = tf::getYaw(carto_data.pose.orientation);//机器人本身的朝向角
+        angle_diff = alpha - global_angle;
+        std::cout << "p2 angle_diff = " << angle_diff << std::endl;
+
         ros::spinOnce();
       }
       std::cout << "intoDone = " << intoDone << std::endl;
@@ -400,7 +438,7 @@ namespace detect_planner {
   }
   void DetectPlanner::cartoCallback(const robot_msg::SlamStatus::ConstPtr &msg)
   {
-    ROS_INFO("carto data recevied");
+    ROS_INFO_ONCE("carto data recevied");
     boost::mutex::scoped_lock lock(this->carto_mutex_);
     this->carto_data_ = *msg;
   }
@@ -420,12 +458,11 @@ namespace detect_planner {
   }
   void DetectPlanner::getCartoPose(robot_msg::SlamStatus &data)
   {
-//    ros::Time now = ros::Time::now();
-//    if(now.toSec() - this->carto_data_.header.stamp.toSec() > 5){
-//        ROS_INFO_ONCE("time delay 5s ");
-//        return;
-//    }
-//    ROS_INFO("get new carto info");
+    ros::Time now = ros::Time::now();
+    if(now.toSec() - this->carto_data_.header.stamp.toSec() > 5){
+        ROS_INFO("time delay 5s ");
+        return;
+    }
     data = this->carto_data_;
   }
   void DetectPlanner::getLaserPoint(std::vector<std::pair<double, double> > &data)
