@@ -11,6 +11,8 @@
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf/transform_listener.h>
+#include <robot_msg/SlamStatus.h>
+#include <move_base_msgs/MoveBaseActionGoal.h>
 
 namespace detect_planner {
 
@@ -24,6 +26,8 @@ namespace detect_planner {
       nh_ = new ros::NodeHandle("~/");
       laser_sub_ = nh_->subscribe<sensor_msgs::LaserScan>("/scan",1,boost::bind(&DetectPlanner::scanCallback,this,_1));
       odom_sub_ = nh_->subscribe<nav_msgs::Odometry>("/odom",1,boost::bind(&DetectPlanner::odomCallback,this,_1));
+      carto_sub_ = nh_->subscribe<robot_msg::SlamStatus>("/slam_status",1,boost::bind(&DetectPlanner::cartoCallback,this,_1));
+      goal_sub_ = nh_->subscribe<move_base_msgs::MoveBaseActionGoal>("/move_base/goal",1,boost::bind(&DetectPlanner::goalCallback,this,_1));//话题要改
       vel_pub_ = nh_->advertise<geometry_msgs::Twist>("/cmd_vel",1);
 
       nh_->param("detect_planner/base_frame", base_frame_, std::string("base_link"));
@@ -65,7 +69,7 @@ namespace detect_planner {
     //ros::NodeHandle private_nh("~/");
     laser_sub_ = nh_->subscribe<sensor_msgs::LaserScan>("/scan",1,boost::bind(&DetectPlanner::scanCallback,this,_1));
     odom_sub_ = nh_->subscribe<nav_msgs::Odometry>("/odom",1,boost::bind(&DetectPlanner::odomCallback,this,_1));
-
+    carto_sub_ = nh_->subscribe<robot_msg::SlamStatus>("/slam_status",1,boost::bind(&DetectPlanner::cartoCallback,this,_1));
     //ros::Duration(2).sleep();
 
     //订阅话题进行持续判断是否有中断请求
@@ -140,6 +144,46 @@ namespace detect_planner {
 
     //TODO 这里要加电梯口设别和位置矫正逻辑，保证其朝向是垂直于电梯门的，误差不要太大，矫正完毕后
     //进入前进逻辑
+    double x_diff, y_diff, alpha,global_angle, angle_diff;
+    geometry_msgs::Pose  global_pose, goal_pose;
+    robot_msg::SlamStatus carto_data;
+    this->getCartoPose(carto_data);
+    global_pose = carto_data.pose;
+    //goal_pose = goal_data_.goal.target_pose.pose;
+    //先固定点进行写死，后续动态获取和写死都可以切换
+    goal_pose.position.x = 1.8;
+    goal_pose.position.y = 0.0;
+
+    x_diff = goal_pose.position.x - global_pose.position.x;
+    y_diff = goal_pose.position.y - global_pose.position.y;
+    std::cout << "x,y = " << global_pose.position.x <<" , " << global_pose.position.y << std::endl;
+    alpha = std::atan2(y_diff, x_diff);//路径直线的夹角
+    global_angle = tf::getYaw(carto_data.pose.orientation);//机器人本身的朝向角
+    angle_diff = alpha - global_angle;
+    std::cout << "angle_diff = " << angle_diff << std::endl;
+    double temp;
+    ROS_INFO("angle correct start");
+    while (ros::ok() && fabs(angle_diff) > 0.05) {
+      cmd_vel.angular.z =  (angle_diff / 5.0);
+      this->vel_pub_.publish(cmd_vel);
+
+      //更新angle_diff
+      temp = global_angle;
+      ros::Duration(1).sleep();
+      this->getCartoPose(carto_data);
+      global_pose = carto_data.pose;
+      x_diff = goal_pose.position.x - global_pose.position.x;
+      y_diff = goal_pose.position.y - global_pose.position.y;
+      //std::cout << "x,y = " << global_pose.position.x <<" , " << global_pose.position.y << std::endl;
+      alpha = std::atan2(y_diff, x_diff);//路径直线的夹角
+      global_angle = tf::getYaw(carto_data.pose.orientation);//机器人本身的朝向角
+      angle_diff = alpha - global_angle;
+      std::cout << "part2 angle_diff = " << angle_diff << std::endl;
+      ros::spinOnce();
+    }
+    ROS_INFO("angle correct end");
+    cmd_vel.angular.z =  0;
+    this->vel_pub_.publish(cmd_vel);
 
     //进入循环，直行逻辑开始
     while(ros::ok())
@@ -211,7 +255,7 @@ namespace detect_planner {
         double diff_y = robot_current_y - robot_start_y;
 
         distance = sqrt(diff_x*diff_x+diff_y*diff_y);
-        std::cout << "distance = " << distance << std::endl;
+        //std::cout << "distance = " << distance << std::endl;
         if(distance > 0.83)
         {
           intoDone = true;
@@ -354,6 +398,18 @@ namespace detect_planner {
     boost::mutex::scoped_lock lock(this->odom_mutex_);
     this->odom_data_ = *msg;
   }
+  void DetectPlanner::cartoCallback(const robot_msg::SlamStatus::ConstPtr &msg)
+  {
+    ROS_INFO("carto data recevied");
+    boost::mutex::scoped_lock lock(this->carto_mutex_);
+    this->carto_data_ = *msg;
+  }
+  void DetectPlanner::goalCallback(const move_base_msgs::MoveBaseActionGoal::ConstPtr &msg)
+  {
+    ROS_INFO_ONCE("goal recevied");
+    boost::mutex::scoped_lock lock(this->carto_mutex_);
+    this->goal_data_ = *msg;
+  }
   void DetectPlanner::getLaserData(sensor_msgs::LaserScan &data)
   {
     ros::Time now = ros::Time::now();
@@ -361,6 +417,16 @@ namespace detect_planner {
         return;
     }
     data = this->laser_data_;
+  }
+  void DetectPlanner::getCartoPose(robot_msg::SlamStatus &data)
+  {
+//    ros::Time now = ros::Time::now();
+//    if(now.toSec() - this->carto_data_.header.stamp.toSec() > 5){
+//        ROS_INFO_ONCE("time delay 5s ");
+//        return;
+//    }
+//    ROS_INFO("get new carto info");
+    data = this->carto_data_;
   }
   void DetectPlanner::getLaserPoint(std::vector<std::pair<double, double> > &data)
   {

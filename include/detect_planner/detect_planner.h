@@ -18,6 +18,8 @@
 #include <tf/transform_datatypes.h>
 #include <boost/thread/mutex.hpp>
 #include <boost/bind/bind.hpp>
+#include <robot_msg/SlamStatus.h>
+#include <move_base_msgs/MoveBaseActionGoal.h>
 
 
 
@@ -47,34 +49,34 @@ namespace detect_planner{
       ~DetectPlanner();
 
     private:
-      ros::NodeHandle *nh_;
-      ros::Subscriber laser_sub_;
-      //ros::Subscriber camera_sub_;
-      ros::Subscriber odom_sub_;
-      ros::Subscriber mbc_sub_;
-      ros::Publisher  vel_pub_;
-      std::vector<std::pair<double,double>> point_vec_;
-      std::string base_frame_, laser_frame_;
-      sensor_msgs::LaserScan laser_data_;
-      nav_msgs::Odometry odom_data_;
-      boost::mutex laser_mutex_;
-      boost::mutex odom_mutex_;
-      tf::StampedTransform transform;
-      bool move_base_cancel_;
-      double pi;
-
-
       void scanCallback(const sensor_msgs::LaserScan::ConstPtr& msg);
+
       void publishZeroVelocity();
+
       void getLaserData(sensor_msgs::LaserScan& data);
+
+      void getCartoPose(robot_msg::SlamStatus& data);
+
       void getLaserPoint(std::vector< std::pair<double,double> >& data);
+
       void getOdomData(nav_msgs::Odometry& data);
+
       void odomCallback(const nav_msgs::Odometry::ConstPtr& msg);
+
+      void cartoCallback(const robot_msg::SlamStatus::ConstPtr& msg);
+
+      void goalCallback(const move_base_msgs::MoveBaseActionGoal::ConstPtr& msg);
+
       void movebaseCancelCallback(const actionlib_msgs::GoalID::ConstPtr& msg);
+
       void getLaserTobaselinkTF(std::string sensor_frame, std::string base_frame);
+
       bool HaveObstacles(std::vector<std::pair<double,double>> sensor_point,double x,double y);
+
       void goback(double distance);
+
       void turnAngle(double angle);
+
       double inline normalizeAngle(double val, double min, double max)
       {
         double norm = 0.0;
@@ -84,15 +86,37 @@ namespace detect_planner{
           norm = max - fmod((min - val), (max-min));
         return norm;
       }
-      /**
-       * @brief  Checks the legality of the robot footprint at a position and orientation using the world model
-       * @param x_i The x position of the robot 
-       * @param y_i The y position of the robot 
-       * @param theta_i The orientation of the robot
-       * @return 
-       */
 
+      //global variable
+      ros::NodeHandle *nh_;
+      bool move_base_cancel_;
+      double pi;
+      std::string base_frame_, laser_frame_;
       bool initialized_;
+
+      //sub
+      ros::Subscriber laser_sub_,odom_sub_,mbc_sub_,carto_sub_,goal_sub_;
+
+      //pub
+      ros::Publisher  vel_pub_;
+
+      //data
+      std::vector<std::pair<double,double>> point_vec_;
+      sensor_msgs::LaserScan laser_data_;
+      nav_msgs::Odometry odom_data_;
+      robot_msg::SlamStatus carto_data_;
+      move_base_msgs::MoveBaseActionGoal goal_data_;
+
+      //mutex
+      boost::mutex laser_mutex_;
+      boost::mutex odom_mutex_;
+      boost::mutex carto_mutex_;
+      boost::mutex get_laser_mutex_;
+      boost::mutex get_odom_mutex_;
+      boost::mutex cancle_mutex_;
+
+      //tf
+      tf::StampedTransform transform;
   };
 };  
 #endif
