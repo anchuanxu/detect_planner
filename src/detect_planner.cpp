@@ -13,6 +13,7 @@
 #include <tf/transform_listener.h>
 #include <robot_msg/SlamStatus.h>
 #include <move_base_msgs/MoveBaseActionGoal.h>
+#include <math.h>
 
 namespace detect_planner {
 
@@ -40,6 +41,7 @@ namespace detect_planner {
       getLaserTobaselinkTF(laser_frame_, base_frame_);
       move_base_cancel_ = false;
       pi = 3.55;
+      doorOpen_ = false;
 
       initialized_ = true;
     }
@@ -62,6 +64,14 @@ namespace detect_planner {
 
     if(!initialized_){
       ROS_ERROR("The planner has not been initialized, please call initialize() to use the planner");
+      return false;
+    }
+    //TODO :接收到电梯信号
+    doorOpen_ = true;
+
+    if(!doorOpen_)
+    {
+      ROS_ERROR("The elevator doors are not open");
       return false;
     }
 
@@ -87,12 +97,39 @@ namespace detect_planner {
     }
 
     //从里程计获取当前位姿
-    nav_msgs::Odometry odom_data;
-    //ros::Duration(0.5).sleep();
-    this->getOdomData(odom_data);
-    double robot_start_x = odom_data.pose.pose.position.x;
-    double robot_start_y = odom_data.pose.pose.position.y;
-    double robot_start_t = tf::getYaw(odom_data.pose.pose.orientation);
+//    nav_msgs::Odometry odom_data;
+//    this->getOdomData(odom_data);
+//    double robot_start_x = odom_data.pose.pose.position.x;
+    //double robot_start_y = odom_data.pose.pose.position.y;
+    //double robot_start_t = tf::getYaw(odom_data.pose.pose.orientation);
+//    uint32_t count_step = 0;
+//    while(isnan(robot_start_t))
+//    {
+//       ROS_INFO("can't get right robot post");
+//       if(count_step++ > 10)
+//       {
+//         laser_sub_.shutdown();
+//         odom_sub_.shutdown();
+//         ROS_ERROR("odom no data then return!");
+//         return false;
+//       }
+//       ros::Duration(0.05).sleep();
+//       this->getOdomData(odom_data);
+//       robot_start_x = odom_data.pose.pose.position.x;
+//       robot_start_y = odom_data.pose.pose.position.y;
+//       robot_start_t = tf::getYaw(odom_data.pose.pose.orientation);
+//       ros::spinOnce();
+//    }
+//    double robot_current_x = robot_start_x;
+//    double robot_current_y = robot_start_y;
+   // double robot_current_t = robot_start_t; //用odom计算角度时用到。
+
+    //从carto_data获取到当前位姿
+    robot_msg::SlamStatus carto_data;
+    this->getCartoPose(carto_data);
+    double robot_start_x = carto_data.pose.position.x;
+    double robot_start_y = carto_data.pose.position.y;
+    double robot_start_t = tf::getYaw(carto_data.pose.orientation);
     uint32_t count_step = 0;
     while(isnan(robot_start_t))
     {
@@ -100,21 +137,20 @@ namespace detect_planner {
        if(count_step++ > 10)
        {
          laser_sub_.shutdown();
-         odom_sub_.shutdown();
-         ROS_ERROR("odom no data then return!");
+         carto_sub_.shutdown();
+         ROS_ERROR("carto no data then return!");
          return false;
        }
        ros::Duration(0.05).sleep();
-       this->getOdomData(odom_data);
-       robot_start_x = odom_data.pose.pose.position.x;
-       robot_start_y = odom_data.pose.pose.position.y;
-       robot_start_t = tf::getYaw(odom_data.pose.pose.orientation);
+       this->getCartoPose(carto_data);
+       robot_start_x = carto_data.pose.position.x;
+       robot_start_y = carto_data.pose.position.y;
+       robot_start_t = tf::getYaw(carto_data.pose.orientation);
        ros::spinOnce();
     }
     double robot_current_x = robot_start_x;
     double robot_current_y = robot_start_y;
-   // double robot_current_t = robot_start_t; //用odom计算角度时用到。
-    double distance = 0.0;
+    double distance;
 
 
     //获取激光数据
@@ -145,25 +181,29 @@ namespace detect_planner {
     //TODO 这里要加电梯口设别和位置矫正逻辑，保证其朝向是垂直于电梯门的，误差不要太大，矫正完毕后
     //进入前进逻辑
     double x_diff, y_diff, alpha,global_angle, angle_diff;
-    geometry_msgs::Pose  global_pose, goal_pose;
-    robot_msg::SlamStatus carto_data;
+    geometry_msgs::Pose  global_pose, goal_pose, goal2_pose;
     this->getCartoPose(carto_data);
     global_pose = carto_data.pose;
-    //goal_pose = goal_data_.goal.target_pose.pose;
-    //先固定点进行写死，后续动态获取和写死都可以切换
-    goal_pose.position.x = 1.8;
+    //目标点1 也就是乘梯点
+    goal_pose.position.x = 1.6;
     goal_pose.position.y = 0.0;
+
+    //目标点2 也就是候梯点
+    goal2_pose.position.x = 0.0;
+    goal2_pose.position.y = 0.0;
 
     x_diff = goal_pose.position.x - global_pose.position.x;
     y_diff = goal_pose.position.y - global_pose.position.y;
-    std::cout << "x,y = " << global_pose.position.x <<" , " << global_pose.position.y << std::endl;
+    //std::cout << "x,y = " << global_pose.position.x <<" , " << global_pose.position.y << std::endl;
     alpha = std::atan2(y_diff, x_diff);//路径直线的夹角
+    distance = sqrt((x_diff * x_diff) +(y_diff * y_diff));//机器人距离目标点的距离长度
     global_angle = tf::getYaw(carto_data.pose.orientation);//机器人本身的朝向角
     angle_diff = alpha - global_angle;
+    angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
     std::cout << "angle_diff = " << angle_diff << std::endl;
     double temp;
     ROS_INFO("Robot initial posture correction start");
-    while (ros::ok() && fabs(angle_diff) > 0.05) {
+    while (ros::ok() && fabs(angle_diff) > 0.1) {
       cmd_vel.angular.z =  (angle_diff / 2.0);
       this->vel_pub_.publish(cmd_vel);
 
@@ -177,7 +217,8 @@ namespace detect_planner {
       alpha = std::atan2(y_diff, x_diff);//路径直线的夹角
       global_angle = tf::getYaw(carto_data.pose.orientation);//机器人本身的朝向角
       angle_diff = alpha - global_angle;
-      std::cout << "p0 angle_diff = " << angle_diff << std::endl;
+      angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
+      //std::cout << "p0 angle_diff = " << angle_diff << std::endl;
       ros::spinOnce();
     }
     cmd_vel.angular.z =  0;
@@ -205,7 +246,7 @@ namespace detect_planner {
 
       //第一部分 行走至电梯里
 
-      while(ros::ok() && go_forward == true && distance < 1.2)
+      while(ros::ok() && go_forward == true && distance >= 0.4)
       {
         if(fabs(angle_diff) > 0.01)
         {
@@ -224,9 +265,11 @@ namespace detect_planner {
         x_diff = goal_pose.position.x - global_pose.position.x;
         y_diff = goal_pose.position.y - global_pose.position.y;
         alpha = std::atan2(y_diff, x_diff);//路径直线的夹角
+        distance = sqrt((x_diff * x_diff) +(y_diff * y_diff));
         global_angle = tf::getYaw(carto_data.pose.orientation);//机器人本身的朝向角
         angle_diff = alpha - global_angle;
-        std::cout << "p1 angle_diff = " << angle_diff << std::endl;
+        angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
+        //std::cout << "p1 angle_diff = " << angle_diff << std::endl;
 
         this->getLaserPoint(laser_point);
         go_forward = HaveObstacles(laser_point,0.4,0.35);
@@ -249,38 +292,36 @@ namespace detect_planner {
           {
             publishZeroVelocity();
             ROS_INFO("Unable to enter elevator, return to origin!");
-            this->getOdomData(odom_data);
-            robot_current_x = odom_data.pose.pose.position.x;
-            robot_current_y = odom_data.pose.pose.position.y;
+            this->getCartoPose(carto_data);
+            robot_current_x = carto_data.pose.position.x;
+            robot_current_y = carto_data.pose.position.y;
 
             double diff_x = robot_current_x - robot_start_x;
             double diff_y = robot_current_y - robot_start_y;
+            double overDistance;
 
-            distance = sqrt(diff_x*diff_x+diff_y*diff_y);
-            std::cout << "distance = " << distance << std::endl;
+            overDistance = sqrt(diff_x*diff_x+diff_y*diff_y);//已经行走的距离
+            std::cout << "overDistance = " << overDistance  << std::endl;
             ROS_INFO("return origin over");
-            goback((distance + 0.01));
+            goback((overDistance  + 0.01));
             return false;//退出程序
           }
         }
-        //更新一下已走的距离
-        this->getOdomData(odom_data);
-        robot_current_x = odom_data.pose.pose.position.x;
-        robot_current_y = odom_data.pose.pose.position.y;
-
-        double diff_x = robot_current_x - robot_start_x;
-        double diff_y = robot_current_y - robot_start_y;
-
-        distance = sqrt(diff_x*diff_x+diff_y*diff_y);
-        //std::cout << "distance = " << distance << std::endl;
-        if(distance > 0.83)
+        //更新一下距离目标点的距离
+        this->getCartoPose(carto_data);
+        global_pose = carto_data.pose;
+        x_diff = goal_pose.position.x - global_pose.position.x;
+        y_diff = goal_pose.position.y - global_pose.position.y;
+        distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));
+        std::cout << "goal distance = " << distance << std::endl;
+        if(distance <= 0.4)
         {
           intoDone = true;
         }
         ros::spinOnce();
       }
       //第二部分电梯内小范围前进
-      while(ros::ok() && go_forward == true && distance < 1.6) //跟电梯的长宽及障碍物有关
+      while(ros::ok() && go_forward == true && distance < 0.4) //跟电梯的长宽及障碍物有关
       {
         if(fabs(angle_diff) > 0.01)
         {
@@ -309,20 +350,17 @@ namespace detect_planner {
             break;//实在无法前进了，就地停止
           }
           //更新一下已走的距离
-          this->getOdomData(odom_data);
-          robot_current_x = odom_data.pose.pose.position.x;
-          robot_current_y = odom_data.pose.pose.position.y;
+          this->getCartoPose(carto_data);
+          global_pose = carto_data.pose;
+          x_diff = goal_pose.position.x - global_pose.position.x;
+          y_diff = goal_pose.position.y - global_pose.position.y;
+          distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));
+          std::cout << "into goal distance = " << distance << std::endl;
 
-          double diff_x = robot_current_x - robot_start_x;
-          double diff_y = robot_current_y - robot_start_y;
-
-          distance = sqrt(diff_x*diff_x+diff_y*diff_y);
-          std::cout << "part 2 distance = " << distance << std::endl;
-          if(distance >= 1.6)
+          if(distance <= 0.02)
           {
             publishZeroVelocity();
             intoDone = true;
-            ROS_INFO("test 1");
             go_forward = false;
             break;
           }
@@ -338,22 +376,143 @@ namespace detect_planner {
         alpha = std::atan2(y_diff, x_diff);//路径直线的夹角
         global_angle = tf::getYaw(carto_data.pose.orientation);//机器人本身的朝向角
         angle_diff = alpha - global_angle;
-        std::cout << "p2 angle_diff = " << angle_diff << std::endl;
+        angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
+        //std::cout << "p2 angle_diff = " << angle_diff << std::endl;
 
         ros::spinOnce();
       }
       std::cout << "intoDone = " << intoDone << std::endl;
       std::cout << "go_forward = " << go_forward << std::endl;
 
-      //第三部分　旋转180度
+      //第三部分　旋转180度 乘电梯
       while(ros::ok() && intoDone == true && go_forward == false)
       {
         ROS_INFO("turn my body");
         turnAngle(180);
-        publishZeroVelocity();
-        ROS_INFO("let's go");
-        return true;
-        //TODO:发送关闭电梯门指令
+
+        //此处乘电梯用时间控制，后续交给梯控程序控制，判断条件就是true or false
+//        double startTakeEle, endTakeEle;
+//        startTakeEle = ros::Time::now().sec;
+//        for (endTakeEle = ros::Time::now().sec; endTakeEle - startTakeEle < 10.0;) {
+//          publishZeroVelocity();
+//          doorOpen_ = false;
+//          ROS_INFO_ONCE("---Ride in an elevator---");
+//        }
+        ros::Rate r(20);
+        uint8_t count = 0;
+        while(ros::ok() && count++ < 100)
+        {
+          ROS_INFO("---Ride in an elevator---");
+          r.sleep();
+          ros::spinOnce();
+        }
+        ROS_INFO("Arrived at the designated floor");
+        doorOpen_ = true;
+        //TODO:发送开电梯门指令
+        //TODO:等待电梯们完全开启后判断 break,执行出电梯程序
+
+        break;
+      }
+
+      //第四部分 出电梯
+      //调整位姿态
+      this->getCartoPose(carto_data); //获取下carto的信息，更新启始点
+      global_pose = carto_data.pose;
+      robot_start_x = carto_data.pose.position.x;
+      robot_start_y = carto_data.pose.position.y;
+
+
+
+      x_diff = goal2_pose.position.x - global_pose.position.x;
+      y_diff = goal2_pose.position.y - global_pose.position.y;
+      distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));//距离目标点2的距离
+      alpha = std::atan2(y_diff, x_diff);//路径直线的夹角
+      global_angle = tf::getYaw(carto_data.pose.orientation);//机器人本身的朝向角
+      angle_diff = alpha - global_angle;
+      angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
+      std::cout << "p3 angle_diff = " << angle_diff << std::endl;
+      double temp;
+      ROS_INFO("sencond robot posture correction start");
+      while (ros::ok() && fabs(angle_diff) > 0.1) {
+        cmd_vel.angular.z =  (angle_diff / 2.0);
+        this->vel_pub_.publish(cmd_vel);
+
+        //更新angle_diff
+        temp = global_angle;
+        this->getCartoPose(carto_data);
+        global_pose = carto_data.pose;
+        x_diff = goal2_pose.position.x - global_pose.position.x;
+        y_diff = goal2_pose.position.y - global_pose.position.y;
+        //std::cout << "x,y = " << global_pose.position.x <<" , " << global_pose.position.y << std::endl;
+        alpha = std::atan2(y_diff, x_diff);//路径直线的夹角
+        global_angle = tf::getYaw(carto_data.pose.orientation);//机器人本身的朝向角
+        angle_diff = alpha - global_angle;
+        angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
+        //std::cout << "p3 angle_diff = " << angle_diff << std::endl;
+        ros::spinOnce();
+      }
+      cmd_vel.angular.z =  0;
+      this->vel_pub_.publish(cmd_vel);
+      ROS_INFO("second robot  posture correction end");
+
+      //出电梯直行
+      while(ros::ok() && doorOpen_ && distance > 0.02)
+      {
+        this->getLaserPoint(laser_point);//获取下最新的激光数据
+        go_forward = HaveObstacles(laser_point,0.4,0.35);
+        if(go_forward == false)
+        {
+          ROS_INFO("please move your body");
+          ros::Rate r(20);
+          uint8_t count = 0;
+          while(ros::ok() && count++ < 20)
+          {
+            r.sleep();
+            ros::spinOnce();
+          }
+          ROS_INFO("1 have sleep 1s !");
+        }
+        else {
+          if(fabs(angle_diff) > 0.01)
+          {
+            cmd_vel.angular.z = angle_diff;
+          }
+          else {
+            cmd_vel.angular.z = 0;
+          }
+          cmd_vel.linear.x = 0.1;
+          this->vel_pub_.publish(cmd_vel);
+
+          //更新angle_diff
+          temp = global_angle;
+          this->getCartoPose(carto_data);
+          global_pose = carto_data.pose;
+          x_diff = goal2_pose.position.x - global_pose.position.x;
+          y_diff = goal2_pose.position.y - global_pose.position.y;
+          alpha = std::atan2(y_diff, x_diff);//路径直线的夹角
+          global_angle = tf::getYaw(carto_data.pose.orientation);//机器人本身的朝向角
+          angle_diff = alpha - global_angle;
+          angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
+          //std::cout << "p4 angle_diff = " << angle_diff << std::endl;
+        }
+        //更新一下距离目标点2的距离
+        this->getCartoPose(carto_data);
+        global_pose = carto_data.pose;
+        x_diff = goal2_pose.position.x - global_pose.position.x;
+        y_diff = goal2_pose.position.y - global_pose.position.y;
+        distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));//距离目标点2的距离
+        std::cout << "out distance = " << distance << std::endl;
+        if(distance < 1.2)
+        {
+          intoDone = false;
+        }
+        if(distance < 0.02)
+        {
+          publishZeroVelocity();
+          ROS_INFO("detect planner end");
+          return true;
+        }
+        ros::spinOnce();
       }
     }
     ros::spinOnce();

@@ -93,6 +93,7 @@ namespace detect_planner{
       double pi;
       std::string base_frame_, laser_frame_;
       bool initialized_;
+      bool doorOpen_;
 
       //sub
       ros::Subscriber laser_sub_,odom_sub_,mbc_sub_,carto_sub_,goal_sub_;
