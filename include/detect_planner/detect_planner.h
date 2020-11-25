@@ -71,6 +71,8 @@ namespace detect_planner{
 
       void getLaserTobaselinkTF(std::string sensor_frame, std::string base_frame);
 
+      double updateAngleDiff(robot_msg::SlamStatus carto, geometry_msgs::Pose  goal);
+
       bool HaveObstacles(std::vector<std::pair<double,double>> sensor_point,double x,double y);
 
       void goback(double distance);
@@ -92,6 +94,7 @@ namespace detect_planner{
       bool move_base_cancel_;
       double pi;
       std::string base_frame_, laser_frame_;
+      double waitPoint_x_, waitPoint_y_, takePoint_x_, takePoint_y_;
       bool initialized_;
       bool doorOpen_;
 
