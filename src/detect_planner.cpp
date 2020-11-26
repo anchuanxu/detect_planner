@@ -34,9 +34,9 @@ namespace detect_planner {
       ros::NodeHandle param_nh("~");
       param_nh.param<std::string>("detect_planner/base_frame", base_frame_, std::string("base_link"));
       param_nh.param<std::string>("detect_planner/base_frame", laser_frame_, std::string("laser"));
-      param_nh.param<double>("detect_planner/waitPoint_x", waitPoint_x_, double(0.0));
+      param_nh.param<double>("detect_planner/waitPoint_x", waitPoint_x_, double(-1.0));
       param_nh.param<double>("detect_planner/waitPoint_y", waitPoint_y_, double(0.0));
-      param_nh.param<double>("detect_planner/takePoint_x", takePoint_x_, double(1.6));
+      param_nh.param<double>("detect_planner/takePoint_x", takePoint_x_, double(0.6));
       param_nh.param<double>("detect_planner/takePoint_y", takePoint_y_, double(0.0));
 
       laser_sub_.shutdown();
@@ -269,9 +269,8 @@ namespace detect_planner {
         }
       }
 
-      //第一部分 行走至电梯里
-
-      while(ros::ok() && go_forward == true && distance >= 0.4)
+      //第1部分 行走至电梯前
+      while(ros::ok() && go_forward == true && distance >= 0.82) //2cm容错误差
       {
         if(fabs(angle_diff) > 0.01)
         {
@@ -283,7 +282,7 @@ namespace detect_planner {
         cmd_vel.linear.x = 0.1;
         this->vel_pub_.publish(cmd_vel);
 
-        //更新angle_diff
+        //更新angle_diff和distance
         this->getCartoPose(carto_data);
         global_pose = carto_data.pose;
         x_diff = goal_pose.position.x - global_pose.position.x;
@@ -295,8 +294,7 @@ namespace detect_planner {
         angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
 
         this->getLaserPoint(laser_point);
-        go_forward = HaveObstacles(laser_point,0.4,0.35);
-
+        go_forward = HaveObstacles(laser_point,0.45,0.30); //有5cm的容错
         if(go_forward == false)
         {
           publishZeroVelocity();
@@ -307,7 +305,7 @@ namespace detect_planner {
           {
             ROS_INFO("please move your body");
             this->getLaserPoint(laser_point);
-            go_forward = HaveObstacles(laser_point,0.4,0.35);
+            go_forward = HaveObstacles(laser_point,0.45,0.30);
             r.sleep();
             ros::spinOnce();
           }
@@ -337,13 +335,84 @@ namespace detect_planner {
         y_diff = goal_pose.position.y - global_pose.position.y;
         distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));
         std::cout << "goal distance = " << distance << std::endl;
+        ros::spinOnce();
+      }
+      // 第二部分，开始进入电梯
+
+      while(ros::ok() && go_forward == true && distance >= 0.4 && distance < 0.82)
+      {
+        if(fabs(angle_diff) > 0.01)
+        {
+          cmd_vel.angular.z = (angle_diff / 2);
+        }
+        else {
+          cmd_vel.angular.z = 0;
+        }
+        cmd_vel.linear.x = 0.1;
+        this->vel_pub_.publish(cmd_vel);
+
+        //更新angle_diff和distance
+        this->getCartoPose(carto_data);
+        global_pose = carto_data.pose;
+        x_diff = goal_pose.position.x - global_pose.position.x;
+        y_diff = goal_pose.position.y - global_pose.position.y;
+
+        distance = sqrt((x_diff * x_diff) +(y_diff * y_diff));
+
+        angle_diff = updateAngleDiff(carto_data,goal_pose);
+        angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
+
+        this->getLaserPoint(laser_point);
+        go_forward = HaveObstacles(laser_point,0.2,0.30); //这里只能探测极限距离可不可以停靠 距离稍微短一些
+
+        if(go_forward == false)
+        {
+          publishZeroVelocity();
+          //TODO:播放语音，请让一让，让可爱的机器人进去吧；
+          ros::Rate r(20);
+          uint8_t count = 0;
+          while(ros::ok() && count++ < 160 && go_forward == false) //等待时间久一点
+          {
+            ROS_INFO("please move your body");
+            this->getLaserPoint(laser_point);
+            go_forward = HaveObstacles(laser_point,0.2,0.30);
+            r.sleep();
+            ros::spinOnce();
+          }
+          if(go_forward == false)
+          {
+            publishZeroVelocity();
+            ROS_INFO("Unable to enter elevator, return to origin!");
+            this->getCartoPose(carto_data);
+            robot_current_x = carto_data.pose.position.x;
+            robot_current_y = carto_data.pose.position.y;
+
+            double diff_x = robot_current_x - goal2_pose.position.x;
+            double diff_y = robot_current_y - goal2_pose.position.y;
+            double overDistance;
+
+            overDistance = sqrt(diff_x*diff_x+diff_y*diff_y);//已经行走的距离
+            std::cout << "toWaitPointDistance = " << overDistance  << std::endl;
+            goback(overDistance + 0.01);
+            ROS_INFO("return waiting point");
+            return false;//退出程序
+          }
+        }
+        //更新一下距离目标点的距离
+        this->getCartoPose(carto_data);
+        global_pose = carto_data.pose;
+        x_diff = goal_pose.position.x - global_pose.position.x;
+        y_diff = goal_pose.position.y - global_pose.position.y;
+        distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));
+        std::cout << "came in, goal distance = " << distance << std::endl;
         if(distance <= 0.4)
         {
+          ROS_INFO("I came in!");
           intoDone = true;
         }
         ros::spinOnce();
       }
-      //第二部分电梯内小范围前进
+      //第三部分电梯内小范围前进，到达乘梯点，到不了就停下。
       while(ros::ok() && go_forward == true && distance < 0.4) //跟电梯的长宽及障碍物有关
       {
         if(fabs(angle_diff) > 0.01)
@@ -398,7 +467,7 @@ namespace detect_planner {
       std::cout << "intoDone = " << intoDone << std::endl;
       std::cout << "go_forward = " << go_forward << std::endl;
 
-      //第三部分　旋转180度 乘电梯
+      //第四部分　旋转180度 乘电梯
       while(ros::ok() && intoDone == true && go_forward == false)
       {
         ROS_INFO("turn my body");
@@ -460,7 +529,7 @@ namespace detect_planner {
         break;
       }
 
-      //第四部分 出电梯
+      //第五部分 出电梯
       //调整位姿态
       this->getCartoPose(carto_data); //获取下carto的信息，更新启始点
       global_pose = carto_data.pose;
