@@ -1,0 +1,7 @@
+<launch>
+    <!--detect planner-->
+    <node name="detect_planner"  pkg="detect_planner"  type="detect_planner" output="screen" respawn="true" >
+        <param name="base_frame"           type="string"   value="base_link"/>
+        <param name="laser_frame"          type="string"   value="laser"/>
+    </node>
+</launch>

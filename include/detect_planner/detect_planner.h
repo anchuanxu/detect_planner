@@ -20,10 +20,17 @@
 #include <boost/bind/bind.hpp>
 #include <robot_msg/SlamStatus.h>
 #include <move_base_msgs/MoveBaseActionGoal.h>
+#include <tf2_ros/transform_listener.h>
+#include <actionlib/server/simple_action_server.h>
+#include <robot_msg/auto_elevatorAction.h>
 
-
+#include <fstream>
+#include <ctime>
+#define DETECT_PLANNER_LOG(x){if(this->record_log_){this->log_ << x << std::endl;}}
 
 namespace detect_planner{
+
+  #define DETECT_PLANNER_RECORD 1
   /**
    * @class DetectPlanner
    * @brief A small area navigation method.
@@ -31,11 +38,14 @@ namespace detect_planner{
   class DetectPlanner{
     public:
 
-      DetectPlanner();
+      DetectPlanner(std::string name, tf2_ros::Buffer& tf);
       /**
        * @brief  Constructor for the DetectPlanner
        */
       void initialize();
+
+      //void Init(int current_floor, geometry_msgs::Pose takepose,
+               // int target_floor,  geometry_msgs::Pose waitpose);
 
       /**
        * @brief Given a goal pose in the world, compute a plan
@@ -44,8 +54,6 @@ namespace detect_planner{
        * @param plan The plan... filled by the planner
        * @return True if a valid plan was found, false otherwise
        */
-      bool runPlan();
-
       ~DetectPlanner();
 
     private:
@@ -69,6 +77,8 @@ namespace detect_planner{
 
       void movebaseCancelCallback(const actionlib_msgs::GoalID::ConstPtr& msg);
 
+      void subShutDown();
+
       void getLaserTobaselinkTF(std::string sensor_frame, std::string base_frame);
 
       double updateAngleDiff(robot_msg::SlamStatus carto, geometry_msgs::Pose  goal);
@@ -78,6 +88,12 @@ namespace detect_planner{
       void goback(double distance);
 
       void turnAngle(double angle);
+
+      void executeCB(const robot_msg::auto_elevatorGoalConstPtr& goal);
+
+      bool runPlan(geometry_msgs::Pose takePoint, geometry_msgs::Pose waitPoint);
+
+      void preemptCB();
 
       double inline normalizeAngle(double val, double min, double max)
       {
@@ -94,9 +110,16 @@ namespace detect_planner{
       bool move_base_cancel_;
       double pi;
       std::string base_frame_, laser_frame_;
-      double waitPoint_x_, waitPoint_y_, takePoint_x_, takePoint_y_;
-      bool initialized_;
-      bool doorOpen_;
+      //double waitPoint_x_, waitPoint_y_, takePoint_x_, takePoint_y_;
+      bool   initialized_;
+      bool   doorOpen_;
+
+      //action
+      ros::NodeHandle ah_,ph_;
+      std::string     action_name_;
+      actionlib::SimpleActionServer<robot_msg::auto_elevatorAction> as_;
+      robot_msg::auto_elevatorFeedback feedback_;
+      robot_msg::auto_elevatorResult   result_;
 
       //sub
       ros::Subscriber laser_sub_,odom_sub_,mbc_sub_,carto_sub_,goal_sub_;
@@ -105,6 +128,7 @@ namespace detect_planner{
       ros::Publisher  vel_pub_;
 
       //data
+      ros::Time receive_laser_time_;
       std::vector<std::pair<double,double>> point_vec_;
       sensor_msgs::LaserScan laser_data_;
       nav_msgs::Odometry odom_data_;
@@ -121,6 +145,10 @@ namespace detect_planner{
 
       //tf
       tf::StampedTransform transform;
+
+      //log
+      std::ofstream log_;
+      bool record_log_;
   };
 };  
 #endif
