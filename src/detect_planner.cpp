@@ -144,14 +144,14 @@ namespace detect_planner {
       {
         result_.result = true;
         as_.setSucceeded(result_);
-        ROS_INFO("---take ele success---");
+        ROS_INFO("---take elevator success---");
         return ;
       }
       if(feedback_.feedback == robot_msg::auto_elevatorFeedback::FAILURE)
       {
         result_.result = false;
         as_.setSucceeded(result_);
-        ROS_INFO("---take ele failure---");
+        ROS_INFO("---take elevator failure---");
         return ;
       }
       r.sleep();
@@ -476,7 +476,7 @@ namespace detect_planner {
       }
       // 第二部分，开始进入电梯
 
-      while(ros::ok() && go_forward == true && distance >= 0.4 && distance < 0.82 && !move_base_cancel_)
+      while(ros::ok() && go_forward == true && distance >= 0.4 && !move_base_cancel_)
       {
         if(fabs(angle_diff) > 0.01 && fabs(angle_diff) < 0.5)
         {
@@ -551,12 +551,12 @@ namespace detect_planner {
         {
           ROS_INFO("I came in!");
           DETECT_PLANNER_LOG("I came in!");
-          intoDone = true;
+          //intoDone = true;
         }
         ros::spinOnce();
       }
       //第三部分电梯内小范围前进，到达乘梯点，到不了就停下。
-      while(ros::ok() && go_forward == true && distance < 0.4 && !move_base_cancel_) //跟电梯的长宽及障碍物有关
+      while(ros::ok() && go_forward == true && distance < 0.4 && distance >= 0 && !move_base_cancel_) //跟电梯的长宽及障碍物有关
       {
         if(fabs(angle_diff) > 0.01 && fabs(angle_diff) < 0.5)
         {
