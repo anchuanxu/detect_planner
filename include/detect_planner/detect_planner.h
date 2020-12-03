@@ -19,6 +19,7 @@
 #include <boost/thread/mutex.hpp>
 #include <boost/bind/bind.hpp>
 #include <robot_msg/SlamStatus.h>
+#include <robot_msg/ElevatorState.h>
 #include <move_base_msgs/MoveBaseActionGoal.h>
 #include <tf2_ros/transform_listener.h>
 #include <actionlib/server/simple_action_server.h>
@@ -65,6 +66,8 @@ namespace detect_planner{
 
       void getCartoPose(robot_msg::SlamStatus& data);
 
+      void getElevatorState(robot_msg::ElevatorState& data);
+
       void getLaserPoint(std::vector< std::pair<double,double> >& data);
 
       void getOdomData(nav_msgs::Odometry& data);
@@ -73,7 +76,7 @@ namespace detect_planner{
 
       void cartoCallback(const robot_msg::SlamStatus::ConstPtr& msg);
 
-      void goalCallback(const move_base_msgs::MoveBaseActionGoal::ConstPtr& msg);
+      void elevatorCallback(const robot_msg::ElevatorState::ConstPtr& msg);
 
       void movebaseCancelCallback(const actionlib_msgs::GoalID::ConstPtr& msg);
 
@@ -91,7 +94,7 @@ namespace detect_planner{
 
       void executeCB(const robot_msg::auto_elevatorGoalConstPtr& goal);
 
-      bool runPlan(geometry_msgs::Pose takePoint, geometry_msgs::Pose waitPoint);
+      bool runPlan(geometry_msgs::Pose takePoint, geometry_msgs::Pose waitPoint, int target_floor);
 
       void preemptCB();
 
@@ -110,7 +113,6 @@ namespace detect_planner{
       bool move_base_cancel_;
       double pi;
       std::string base_frame_, laser_frame_;
-      //double waitPoint_x_, waitPoint_y_, takePoint_x_, takePoint_y_;
       bool   initialized_;
       bool   doorOpen_;
 
@@ -122,7 +124,7 @@ namespace detect_planner{
       robot_msg::auto_elevatorResult   result_;
 
       //sub
-      ros::Subscriber laser_sub_,odom_sub_,mbc_sub_,carto_sub_,goal_sub_;
+      ros::Subscriber laser_sub_,odom_sub_,mbc_sub_,carto_sub_,elevator_sub_;
 
       //pub
       ros::Publisher  vel_pub_;
@@ -133,12 +135,13 @@ namespace detect_planner{
       sensor_msgs::LaserScan laser_data_;
       nav_msgs::Odometry odom_data_;
       robot_msg::SlamStatus carto_data_;
-      move_base_msgs::MoveBaseActionGoal goal_data_;
+      robot_msg::ElevatorState ele_data_;
 
       //mutex
       boost::mutex laser_mutex_;
       boost::mutex odom_mutex_;
       boost::mutex carto_mutex_;
+      boost::mutex ele_mutex_;
       boost::mutex get_laser_mutex_;
       boost::mutex get_odom_mutex_;
       boost::mutex cancle_mutex_;

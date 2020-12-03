@@ -11,7 +11,6 @@
 #include <tf2/utils.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 #include <tf/transform_listener.h>
-#include <robot_msg/SlamStatus.h>
 #include <move_base_msgs/MoveBaseActionGoal.h>
 #include <math.h>
 
@@ -37,7 +36,7 @@ namespace detect_planner {
       //odom_sub_ = nh_->subscribe<nav_msgs::Odometry>("/odom",1,boost::bind(&DetectPlanner::odomCallback,this,_1));
       carto_sub_ = nh_->subscribe<robot_msg::SlamStatus>("/slam_status",1,boost::bind(&DetectPlanner::cartoCallback,this,_1));
       mbc_sub_ = nh_->subscribe<actionlib_msgs::GoalID>("/move_base/cancel", 1, boost::bind(&DetectPlanner::movebaseCancelCallback, this, _1));
-      //goal_sub_ = nh_->subscribe<move_base_msgs::MoveBaseActionGoal>("/move_base/goal",1,boost::bind(&DetectPlanner::goalCallback,this,_1));//话题要改
+      //elevator_sub_ = nh_->subscribe<robot_msg::ElevatorState>("/elevator_status",1,boost::bind(&DetectPlanner::elevatorCallback, this, _1));
 
       vel_pub_ = nh_->advertise<geometry_msgs::Twist>("/cmd_vel",1);
 
@@ -105,8 +104,11 @@ namespace detect_planner {
   {
     geometry_msgs::Twist vel;
     geometry_msgs::Pose takePoint, waitPoint;
+    int target_floor_;
+
     takePoint = goal->takepose;
     waitPoint = goal->waitpose;
+    target_floor_ = goal->target_floor;
 
     ros::Rate r(10);
     while (ros::ok())
@@ -135,7 +137,7 @@ namespace detect_planner {
         }
       }
       //执行主要逻辑
-      runPlan(takePoint,waitPoint);
+      runPlan(takePoint,waitPoint,target_floor_);
       as_.publishFeedback(feedback_);
 
       if(feedback_.feedback == robot_msg::auto_elevatorFeedback::SUCCESS)
@@ -156,7 +158,7 @@ namespace detect_planner {
     }
   }
 
-  bool DetectPlanner::runPlan(geometry_msgs::Pose takePoint, geometry_msgs::Pose waitPoint){
+  bool DetectPlanner::runPlan(geometry_msgs::Pose takePoint, geometry_msgs::Pose waitPoint, int target_floor){
 
     if(!initialized_){
       ROS_ERROR("The planner has not been initialized, please call initialize() to use the planner");
@@ -171,11 +173,22 @@ namespace detect_planner {
     DETECT_PLANNER_LOG("detect planner start");
 
     move_base_cancel_ = false;
-    //TODO :接收到电梯信号 等待进入电梯
+    //订阅电梯状态，门开后再进行操作
+//    elevator_sub_ = nh_->subscribe<robot_msg::ElevatorState>("/elevator_status",1,boost::bind(&DetectPlanner::elevatorCallback, this, _1));
+//    getElevatorState(ele_data_);
+//    doorOpen_ = ele_data_.door_status;
+//    while(ros::ok() && !move_base_cancel_ && doorOpen_ == false)
+//    {
+//      publishZeroVelocity();
+//      feedback_.feedback = robot_msg::auto_elevatorFeedback::WAITING_ELEVATOR;
+//      feedback_.feedback_text = "waiting elevator";
+//      as_.publishFeedback(feedback_);
+//      ROS_INFO("please open elevator door");
+//    }
+
     feedback_.feedback = robot_msg::auto_elevatorFeedback::WAITING_ELEVATOR;
     feedback_.feedback_text = "waiting elevator";
     as_.publishFeedback(feedback_);
-
     doorOpen_ = true;
 
     if(!doorOpen_)
@@ -638,22 +651,44 @@ namespace detect_planner {
         ROS_INFO("turn end");
         DETECT_PLANNER_LOG("turn end");
 
-        //此处乘电梯用时间控制，后续交给梯控程序控制，判断条件就是true or false
-//        double startTakeEle, endTakeEle;
-//        startTakeEle = ros::Time::now().sec;
-//        for (endTakeEle = ros::Time::now().sec; endTakeEle - startTakeEle < 10.0;) {
-//          publishZeroVelocity();
-//          doorOpen_ = false;
-//          ROS_INFO_ONCE("---Ride in an elevator---");
+        //判断电梯是否到达目标楼层
+//        ros::Rate r(10);
+//        getElevatorState(ele_data_);
+//        while(ele_data_.current_floor != target_floor && ros::ok() && !move_base_cancel_)
+//        {
+//          ROS_INFO("---Ride in an elevator---");
+//          r.sleep();
+//          getElevatorState(ele_data_);
+//          ros::spinOnce();
 //        }
+//        //电梯已到达目标楼层，准备出电梯，判断门开没开
+//        ROS_INFO("Arrived at the designated floor");
+//        DETECT_PLANNER_LOG("Arrived at the designated floor");
+//        feedback_.feedback = robot_msg::auto_elevatorFeedback::TAKE_THE_ELEVATOR;
+//        feedback_.feedback_text = "take the elevator";
+//        as_.publishFeedback(feedback_);
+
+//        getElevatorState(ele_data_);
+//        doorOpen_ = ele_data_.door_status;
+//        while(ros::ok() && !move_base_cancel_ && doorOpen_ == false)
+//        {
+//          publishZeroVelocity();
+//          feedback_.feedback = robot_msg::auto_elevatorFeedback::TAKE_THE_ELEVATOR;
+//          feedback_.feedback_text = "take the elevator";
+//          as_.publishFeedback(feedback_);
+//          ROS_INFO("please open elevator door");
+//        }
+
+        //到达目标楼层并且门也开了，机器人开始尝试出门 本部分结束
+
 
         //乘坐电梯时间 show time
         ros::Rate r(20);
         uint8_t count = 0;
+        DETECT_PLANNER_LOG("---Ride in an elevator---");
         while(ros::ok() && count++ < 80 && !move_base_cancel_)
         {
           ROS_INFO("---Ride in an elevator---");
-          DETECT_PLANNER_LOG("---Ride in an elevator---");
           r.sleep();
           ros::spinOnce();
         }
@@ -664,8 +699,7 @@ namespace detect_planner {
         as_.publishFeedback(feedback_);
 
         doorOpen_ = true;
-        //TODO:发送开电梯门指令
-        //TODO:等待电梯们完全开启后判断 break,执行出电梯程序
+
 
         break;
       }
@@ -704,6 +738,8 @@ namespace detect_planner {
       feedback_.feedback_text = "get out elevator";
       as_.publishFeedback(feedback_);
 
+//      getElevatorState(ele_data_);
+//      doorOpen_ = ele_data_.door_status;
       while(ros::ok() && doorOpen_ && distance > 0.02 && !move_base_cancel_)
       {
         this->getLaserPoint(laser_point);//获取下最新的激光数据
@@ -870,11 +906,15 @@ namespace detect_planner {
     boost::mutex::scoped_lock lock(this->carto_mutex_);
     this->carto_data_ = *msg;
   }
-  void DetectPlanner::goalCallback(const move_base_msgs::MoveBaseActionGoal::ConstPtr &msg)
+  void DetectPlanner::elevatorCallback(const robot_msg::ElevatorState::ConstPtr &msg)
   {
-    ROS_INFO_ONCE("goal recevied");
-    boost::mutex::scoped_lock lock(this->carto_mutex_);
-    this->goal_data_ = *msg;
+    ROS_INFO_ONCE("elevator state recevied");
+    boost::mutex::scoped_lock lock(this->ele_mutex_);
+    this->ele_data_ = *msg;
+  }
+  void DetectPlanner::getElevatorState(robot_msg::ElevatorState &data)
+  {
+    data = this->ele_data_;
   }
   void DetectPlanner::getLaserData(sensor_msgs::LaserScan &data)
   {
