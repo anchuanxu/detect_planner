@@ -31,6 +31,16 @@
 
 namespace detect_planner{
 
+    enum DetectPlannerState
+    {
+        PART1,
+        PART2,
+        PART3,
+        PART4,
+        PART5,
+        PART6
+    };
+
   #define DETECT_PLANNER_RECORD 1
   /**
    * @class DetectPlanner
@@ -113,8 +123,9 @@ namespace detect_planner{
       bool move_base_cancel_;
       double pi;
       std::string base_frame_, laser_frame_;
-      bool   initialized_;
-      bool   doorOpen_;
+      bool    initialized_;
+      bool    doorOpen_;
+      uint8_t takEleCount;
 
       //action
       ros::NodeHandle ah_,ph_;
@@ -122,6 +133,7 @@ namespace detect_planner{
       actionlib::SimpleActionServer<robot_msg::auto_elevatorAction> as_;
       robot_msg::auto_elevatorFeedback feedback_;
       robot_msg::auto_elevatorResult   result_;
+      DetectPlannerState               state_;
 
       //sub
       ros::Subscriber laser_sub_,odom_sub_,mbc_sub_,carto_sub_,elevator_sub_;

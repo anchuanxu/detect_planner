@@ -25,6 +25,7 @@ namespace detect_planner {
     nh_ = nullptr;
     move_base_cancel_ = false;
     initialize();
+    state_ = PART1;
     as_.start();
     ROS_INFO_STREAM("Action server " << action_name_ << " start!");
   }
@@ -62,6 +63,7 @@ namespace detect_planner {
       getLaserTobaselinkTF(laser_frame_, base_frame_);
       move_base_cancel_ = false;
       pi = 3.55;
+      takEleCount = 0;
       doorOpen_ = false;
       record_log_ = false;
       if(DETECT_PLANNER_RECORD)
@@ -158,22 +160,22 @@ namespace detect_planner {
     }
   }
 
-  bool DetectPlanner::runPlan(geometry_msgs::Pose takePoint, geometry_msgs::Pose waitPoint, int target_floor){
+  bool DetectPlanner::runPlan(geometry_msgs::Pose takePoint, geometry_msgs::Pose waitPoint, int target_floor) {
 
-    if(!initialized_){
-      ROS_ERROR("The planner has not been initialized, please call initialize() to use the planner");
-      feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
-      feedback_.feedback_text = "not init";
-      as_.publishFeedback(feedback_);
+      if (!initialized_) {
+          ROS_ERROR("The planner has not been initialized, please call initialize() to use the planner");
+          feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
+          feedback_.feedback_text = "not init";
+          as_.publishFeedback(feedback_);
 
-      return false;
-    }
+          return false;
+      }
 
-    DETECT_PLANNER_LOG(std::endl);
-    DETECT_PLANNER_LOG("detect planner start");
+      DETECT_PLANNER_LOG(std::endl);
+      DETECT_PLANNER_LOG("detect planner start");
 
-    move_base_cancel_ = false;
-    //订阅电梯状态，门开后再进行操作
+      move_base_cancel_ = false;
+      //订阅电梯状态，门开后再进行操作
 //    elevator_sub_ = nh_->subscribe<robot_msg::ElevatorState>("/elevator_status",1,boost::bind(&DetectPlanner::elevatorCallback, this, _1));
 //    getElevatorState(ele_data_);
 //    doorOpen_ = ele_data_.door_status;
@@ -186,472 +188,388 @@ namespace detect_planner {
 //      ROS_INFO("please open elevator door");
 //    }
 
-    feedback_.feedback = robot_msg::auto_elevatorFeedback::WAITING_ELEVATOR;
-    feedback_.feedback_text = "waiting elevator";
-    as_.publishFeedback(feedback_);
-    doorOpen_ = true;
-
-    if(!doorOpen_)
-    {
-      ROS_ERROR("The elevator doors are not open");
-      feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
-      feedback_.feedback_text = "not init, door not open";
+      feedback_.feedback = robot_msg::auto_elevatorFeedback::WAITING_ELEVATOR;
+      feedback_.feedback_text = "waiting elevator";
       as_.publishFeedback(feedback_);
+      doorOpen_ = true;
 
-      return false;
-    }
-
-    ROS_INFO("---detect planner started!---");
-    feedback_.feedback = robot_msg::auto_elevatorFeedback::SET_NEW_GOAL;
-    feedback_.feedback_text = "set new goal";
-    as_.publishFeedback(feedback_);
-
-    //订阅传感器话题
-    laser_sub_ = nh_->subscribe<sensor_msgs::LaserScan>("/scan",1,boost::bind(&DetectPlanner::scanCallback,this,_1));
-    //odom_sub_ = nh_->subscribe<nav_msgs::Odometry>("/odom",1,boost::bind(&DetectPlanner::odomCallback,this,_1));
-    carto_sub_ = nh_->subscribe<robot_msg::SlamStatus>("/slam_status",1,boost::bind(&DetectPlanner::cartoCallback,this,_1));
-
-    //订阅话题进行持续判断是否有中断请求
-    mbc_sub_ = nh_->subscribe<actionlib_msgs::GoalID>("/move_base/cancel",1,
-                                        boost::bind(&DetectPlanner::movebaseCancelCallback,this,_1));
-
-    //从里程计获取当前位姿
-//    nav_msgs::Odometry odom_data;
-//    this->getOdomData(odom_data);
-//    double robot_start_x = odom_data.pose.pose.position.x;
-    //double robot_start_y = odom_data.pose.pose.position.y;
-    //double robot_start_t = tf::getYaw(odom_data.pose.pose.orientation);
-//    uint32_t count_step = 0;
-//    while(isnan(robot_start_t))
-//    {
-//       ROS_INFO("can't get right robot post");
-//       if(count_step++ > 10)
-//       {
-//         laser_sub_.shutdown();
-//         odom_sub_.shutdown();
-//         ROS_ERROR("odom no data then return!");
-//         return false;
-//       }
-//       ros::Duration(0.05).sleep();
-//       this->getOdomData(odom_data);
-//       robot_start_x = odom_data.pose.pose.position.x;
-//       robot_start_y = odom_data.pose.pose.position.y;
-//       robot_start_t = tf::getYaw(odom_data.pose.pose.orientation);
-//       ros::spinOnce();
-//    }
-//    double robot_current_x = robot_start_x;
-//    double robot_current_y = robot_start_y;
-   // double robot_current_t = robot_start_t; //用odom计算角度时用到。
-
-    //从carto_data获取到当前位姿
-    robot_msg::SlamStatus carto_data;
-    this->getCartoPose(carto_data);
-    double robot_start_x = carto_data.pose.position.x;
-    double robot_start_y = carto_data.pose.position.y;
-    double robot_start_t = tf::getYaw(carto_data.pose.orientation);
-    uint32_t count_step = 0;
-    while(isnan(robot_start_t) && !move_base_cancel_)
-    {
-       DETECT_PLANNER_LOG("can't get right robot post");
-       ROS_INFO("can't get right robot post");
-       if(count_step++ > 10)
-       {
-         subShutDown();
-         ROS_ERROR("carto no data then return!");
-         feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
-         feedback_.feedback_text = "not init, can't get carto data";
-         as_.publishFeedback(feedback_);
-         return false;
-       }
-       ros::Duration(0.05).sleep();
-       this->getCartoPose(carto_data);
-       robot_start_x = carto_data.pose.position.x;
-       robot_start_y = carto_data.pose.position.y;
-       robot_start_t = tf::getYaw(carto_data.pose.orientation);
-       ros::spinOnce();
-    }
-    double robot_current_x = robot_start_x;
-    double robot_current_y = robot_start_y;
-    double distance, distance2;
-
-
-    //获取激光数据
-    std::vector< std::pair<double,double> > laser_point;
-    this->getLaserPoint(laser_point);//使用回调函数赋值
-    count_step=0;
-    while((ros::Time::now().toSec() - this->receive_laser_time_.toSec()) > 0.5 && !move_base_cancel_) //如果激光没有数据，等待10s，如果还没有，退出恢复
-    {
-      DETECT_PLANNER_LOG("can't get scan data");
-      ROS_INFO("can't get scan data");
-      if(count_step++ > 10)
-      {
-        subShutDown();
-        feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
-        feedback_.feedback_text = "not init, can't get scan data";
-        as_.publishFeedback(feedback_);
-        return false;
-      }
-      ros::Duration(1).sleep();
-      this->getLaserPoint(laser_point);
-      ros::spinOnce();
-    }
-
-    //部分变量声明和初始化
-    bool go_forward = false;
-    bool intoDone = false;//是否已经完成进入
-    geometry_msgs::Twist cmd_vel;
-    double start_time,end_time,interval_time;
-
-    //进入前进逻辑
-    double x_diff, y_diff, x_diff2, y_diff2, angle_diff;
-    geometry_msgs::Pose  global_pose, goal_pose, goal2_pose;
-    this->getCartoPose(carto_data);
-    global_pose = carto_data.pose;
-
-    //目标点1 也就是乘梯点
-    goal_pose.position.x = takePoint.position.x;
-    goal_pose.position.y = takePoint.position.y;
-
-    //目标点2 也就是候梯点
-    goal2_pose.position.x = waitPoint.position.x;
-    goal2_pose.position.y = waitPoint.position.y;
-
-    x_diff2 = goal2_pose.position.x - global_pose.position.x;
-    y_diff2 = goal2_pose.position.y - global_pose.position.y;
-
-    distance2 = sqrt((x_diff2 * x_diff2) +(y_diff2 * y_diff2)); //距离候梯点的距离
-    if(distance2 > 1)
-    {
-      ROS_ERROR("robot not in waiting point");
-      feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
-      feedback_.feedback_text = "not init, robot not in waiting point";
-      as_.publishFeedback(feedback_);
-      return false;
-    }
-
-    x_diff = goal_pose.position.x - global_pose.position.x;
-    y_diff = goal_pose.position.y - global_pose.position.y;
-
-    distance = sqrt((x_diff * x_diff) +(y_diff * y_diff));//机器人距离目标点的距离长度
-
-    angle_diff = updateAngleDiff(carto_data,goal_pose);
-    angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
-    std::cout << "angle_diff = " << angle_diff << std::endl;
-    ROS_INFO("Robot initial posture correction start");
-    DETECT_PLANNER_LOG("Robot initial posture correction start");
-    while (ros::ok() && fabs(angle_diff) > 0.06 && !move_base_cancel_) {
-      if(angle_diff > 0.5)
-      {
-        cmd_vel.angular.z = 0.5;
-      }
-      else if(angle_diff < -0.5)
-      {
-        cmd_vel.angular.z = -0.5;
-      }
-      else {
-        cmd_vel.angular.z = angle_diff;
-      }
-      cmd_vel.linear.x = 0;
-      this->vel_pub_.publish(cmd_vel);
-
-      //更新angle_diff
-      this->getCartoPose(carto_data);
-      angle_diff = updateAngleDiff(carto_data,goal_pose);
-      angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
-      ros::spinOnce();
-    }
-    publishZeroVelocity();
-    ROS_INFO("Robot initial posture correction end");
-    DETECT_PLANNER_LOG("Robot initial posture correction end");
-    start_time = ros::Time::now().sec;
-    //进入循环，直行逻辑开始
-    feedback_.feedback = robot_msg::auto_elevatorFeedback::ENTER_ELEVATOR;
-    feedback_.feedback_text = "enter elevator";
-    as_.publishFeedback(feedback_);
-
-    while(ros::ok() && !move_base_cancel_)
-    {
-      this->getLaserPoint(laser_point);//获取下最新的激光数据
-      go_forward = HaveObstacles(laser_point,0.4,0.35);
-      while(ros::ok() && go_forward == false && !move_base_cancel_)
-      {
-        ROS_INFO("please move your body");
-        end_time = ros::Time::now().sec;
-        interval_time = end_time - start_time;
-        std::cout << "waiting you move time = " << interval_time << std::endl;
-        if(interval_time > 15)
-        {
-          ROS_INFO("robot can't move");
-          feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE;
-          feedback_.feedback_text = "failure, robot can't move";
+      if (!doorOpen_) {
+          ROS_ERROR("The elevator doors are not open");
+          feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
+          feedback_.feedback_text = "not init, door not open";
           as_.publishFeedback(feedback_);
-          return false;//等待15s无法上电梯就等待下一部
-        }
-        else
-        {
-          ros::Rate r(20);
-          uint8_t count = 0;
-          while(ros::ok() && count++ < 20 && !move_base_cancel_)
-          {
-            r.sleep();
-            ros::spinOnce();
-          }
-          this->getLaserPoint(laser_point);//获取下最新的激光数据
-          go_forward = HaveObstacles(laser_point,0.4,0.35);
-        }
+
+          return false;
       }
 
-      //第1部分 行走至电梯前
-      while(ros::ok() && go_forward == true && distance >= 0.82 && !move_base_cancel_) //2cm容错误差
-      {
-        if(fabs(angle_diff) > 0.01 && fabs(angle_diff) < 1)
-        {
-          cmd_vel.angular.z = (angle_diff / 2);
-        }
-        else {
-          cmd_vel.angular.z = 0;
-        }
-        cmd_vel.linear.x = 0.1;
-        this->vel_pub_.publish(cmd_vel);
+      ROS_INFO_ONCE("---detect planner started!---");
+      feedback_.feedback = robot_msg::auto_elevatorFeedback::SET_NEW_GOAL;
+      feedback_.feedback_text = "set new goal";
+      as_.publishFeedback(feedback_);
 
-        //更新angle_diff和distance
-        this->getCartoPose(carto_data);
-        global_pose = carto_data.pose;
-        x_diff = goal_pose.position.x - global_pose.position.x;
-        y_diff = goal_pose.position.y - global_pose.position.y;
+      //订阅传感器话题
+      laser_sub_ = nh_->subscribe<sensor_msgs::LaserScan>("/scan", 1,
+                                                          boost::bind(&DetectPlanner::scanCallback, this, _1));
+      //odom_sub_ = nh_->subscribe<nav_msgs::Odometry>("/odom",1,boost::bind(&DetectPlanner::odomCallback,this,_1));
+      carto_sub_ = nh_->subscribe<robot_msg::SlamStatus>("/slam_status", 1,
+                                                         boost::bind(&DetectPlanner::cartoCallback, this, _1));
 
-        distance = sqrt((x_diff * x_diff) +(y_diff * y_diff));
+      //订阅话题进行持续判断是否有中断请求
+      mbc_sub_ = nh_->subscribe<actionlib_msgs::GoalID>("/move_base/cancel", 1,
+                                                        boost::bind(&DetectPlanner::movebaseCancelCallback, this, _1));
+      ros::Rate r(10);
 
-        angle_diff = updateAngleDiff(carto_data,goal_pose);
-        angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
-
-        this->getLaserPoint(laser_point);
-        go_forward = HaveObstacles(laser_point,0.45,0.30); //有5cm的容错
-        if(go_forward == false)
-        {
-          publishZeroVelocity();
-          //TODO:播放语音，请让一让，让可爱的机器人进去吧；
-          ros::Rate r(20);
-          uint8_t count = 0;
-          while(ros::ok() && count++ < 100 && go_forward == false && !move_base_cancel_)
-          {
-            ROS_INFO("please move your body");
-            this->getLaserPoint(laser_point);
-            go_forward = HaveObstacles(laser_point,0.45,0.30);
-            r.sleep();
-            ros::spinOnce();
+      //从carto_data获取到当前位姿
+      robot_msg::SlamStatus carto_data;
+      this->getCartoPose(carto_data);
+      double robot_start_x = carto_data.pose.position.x;
+      double robot_start_y = carto_data.pose.position.y;
+      double robot_start_t = tf::getYaw(carto_data.pose.orientation);
+      uint32_t count_step = 0;
+      while (isnan(robot_start_t) && !move_base_cancel_) {
+          DETECT_PLANNER_LOG("can't get right robot post");
+          ROS_INFO("can't get right robot post");
+          if (count_step++ > 10) {
+              subShutDown();
+              ROS_ERROR("carto no data then return!");
+              feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
+              feedback_.feedback_text = "not init, can't get carto data";
+              as_.publishFeedback(feedback_);
+              return false;
           }
-          if(go_forward == false)
-          {
-            publishZeroVelocity();
-            DETECT_PLANNER_LOG("Unable to enter elevator, return to origin!");
-            ROS_INFO("Unable to enter elevator, return to origin!");
-            this->getCartoPose(carto_data);
-            robot_current_x = carto_data.pose.position.x;
-            robot_current_y = carto_data.pose.position.y;
-
-            double diff_x = robot_current_x - goal2_pose.position.x;
-            double diff_y = robot_current_y - goal2_pose.position.y;
-            double overDistance;
-
-            overDistance = sqrt(diff_x*diff_x+diff_y*diff_y);//已经行走的距离
-            std::cout << "toWaitPointDistance = " << overDistance  << std::endl;
-            goback(overDistance + 0.01);
-            ROS_INFO("return waiting point");
-            DETECT_PLANNER_LOG("return waiting point");
-            feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE;
-            feedback_.feedback_text = "failure, return waiting point";
-            as_.publishFeedback(feedback_);
-            return false;//退出程序
-          }
-        }
-        //更新一下距离目标点的距离
-        this->getCartoPose(carto_data);
-        global_pose = carto_data.pose;
-        x_diff = goal_pose.position.x - global_pose.position.x;
-        y_diff = goal_pose.position.y - global_pose.position.y;
-        distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));
-        std::cout << "goal distance = " << distance << std::endl;
-        ros::spinOnce();
-      }
-      // 第二部分，开始进入电梯
-
-      while(ros::ok() && go_forward == true && distance >= 0.4 && !move_base_cancel_)
-      {
-        if(fabs(angle_diff) > 0.01 && fabs(angle_diff) < 0.5)
-        {
-          cmd_vel.angular.z = (angle_diff / 2);
-        }
-        else {
-          cmd_vel.angular.z = 0;
-        }
-        cmd_vel.linear.x = 0.1;
-        this->vel_pub_.publish(cmd_vel);
-
-        //更新angle_diff和distance
-        this->getCartoPose(carto_data);
-        global_pose = carto_data.pose;
-        x_diff = goal_pose.position.x - global_pose.position.x;
-        y_diff = goal_pose.position.y - global_pose.position.y;
-
-        distance = sqrt((x_diff * x_diff) +(y_diff * y_diff));
-
-        angle_diff = updateAngleDiff(carto_data,goal_pose);
-        angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
-
-        this->getLaserPoint(laser_point);
-        go_forward = HaveObstacles(laser_point,0.2,0.30); //这里只能探测极限距离可不可以停靠 距离稍微短一些
-
-        if(go_forward == false)
-        {
-          publishZeroVelocity();
-          //TODO:播放语音，请让一让，让可爱的机器人进去吧；
-          ros::Rate r(20);
-          uint8_t count = 0;
-          while(ros::ok() && count++ < 160 && go_forward == false && !move_base_cancel_) //等待时间久一点
-          {
-            ROS_INFO("please move your body");
-            this->getLaserPoint(laser_point);
-            go_forward = HaveObstacles(laser_point,0.2,0.30);
-            r.sleep();
-            ros::spinOnce();
-          }
-          if(go_forward == false)
-          {
-            publishZeroVelocity();
-            ROS_INFO("Unable to enter elevator, return to origin!");
-            DETECT_PLANNER_LOG("Unable to enter elevator, return to origin!");
-            this->getCartoPose(carto_data);
-            robot_current_x = carto_data.pose.position.x;
-            robot_current_y = carto_data.pose.position.y;
-
-            double diff_x = robot_current_x - goal2_pose.position.x;
-            double diff_y = robot_current_y - goal2_pose.position.y;
-            double overDistance;
-
-            overDistance = sqrt(diff_x*diff_x+diff_y*diff_y);//已经行走的距离
-            std::cout << "toWaitPointDistance = " << overDistance  << std::endl;
-            goback(overDistance + 0.01);
-            ROS_INFO("return waiting point");
-            DETECT_PLANNER_LOG("return waiting point");
-            feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE;
-            feedback_.feedback_text = "failure, return waiting point";
-            as_.publishFeedback(feedback_);
-            return false;//退出程序
-          }
-        }
-        //更新一下距离目标点的距离
-        this->getCartoPose(carto_data);
-        global_pose = carto_data.pose;
-        x_diff = goal_pose.position.x - global_pose.position.x;
-        y_diff = goal_pose.position.y - global_pose.position.y;
-        distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));
-        std::cout << "came in, goal distance = " << distance << std::endl;
-        if(distance <= 0.4)
-        {
-          ROS_INFO("I came in!");
-          DETECT_PLANNER_LOG("I came in!");
-          //intoDone = true;
-        }
-        ros::spinOnce();
-      }
-      //第三部分电梯内小范围前进，到达乘梯点，到不了就停下。
-      while(ros::ok() && go_forward == true && distance < 0.4 && distance >= 0 && !move_base_cancel_) //跟电梯的长宽及障碍物有关
-      {
-        if(fabs(angle_diff) > 0.01 && fabs(angle_diff) < 0.5)
-        {
-          cmd_vel.angular.z = (angle_diff / 2);
-        }
-        else {
-          cmd_vel.angular.z = 0;
-        }
-        this->getLaserPoint(laser_point);
-        go_forward = HaveObstacles(laser_point,0.3,0.35);
-        if(go_forward == true)
-        {
-          cmd_vel.linear.x = 0.1;
-          this->vel_pub_.publish(cmd_vel);
-
-          this->getLaserPoint(laser_point);
-          go_forward = HaveObstacles(laser_point,0.3,0.35);
-          if(go_forward == false)
-          {
-            ROS_INFO("i have obs !");
-            DETECT_PLANNER_LOG("i have obs!");
-            publishZeroVelocity();
-            intoDone = true;
-            ROS_INFO("i am stop here!");
-            DETECT_PLANNER_LOG("i am stop here!");
-            break;//实在无法前进了，就地停止
-          }
-          //更新一下已走的距离
+          ros::Duration(0.05).sleep();
           this->getCartoPose(carto_data);
-          global_pose = carto_data.pose;
-          x_diff = goal_pose.position.x - global_pose.position.x;
-          y_diff = goal_pose.position.y - global_pose.position.y;
-          distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));
-          std::cout << "into goal distance = " << distance << std::endl;
-
-          if(distance <= 0.02)
-          {
-            publishZeroVelocity();
-            intoDone = true;
-            go_forward = false;
-            break;
-          }
-        }
-
-        //更新angle_diff
-        this->getCartoPose(carto_data);
-        angle_diff = updateAngleDiff(carto_data,goal_pose);
-        angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
-
-        ros::spinOnce();
-      }
-      publishZeroVelocity();
-      std::cout << "intoDone = " << intoDone << std::endl;
-      std::cout << "go_forward = " << go_forward << std::endl;
-
-      //第四部分　旋转180度 乘电梯
-      while(ros::ok() && intoDone == true && go_forward == false && !move_base_cancel_)
-      {
-        ROS_INFO("turn my body");
-        DETECT_PLANNER_LOG("turn my body");
-        //turnAngle(180);
-        this->getCartoPose(carto_data); //获取下carto的信息，更新启始点
-        global_pose = carto_data.pose;
-
-        angle_diff = updateAngleDiff(carto_data,goal2_pose);
-        angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
-        std::cout << "goal2 angle_diff = " << angle_diff << std::endl;
-        ROS_INFO("turn start");
-        DETECT_PLANNER_LOG("turn start");
-        while (ros::ok() && fabs(angle_diff) > 0.06 && !move_base_cancel_) {
-          if(angle_diff > 0.5)
-          {
-            cmd_vel.angular.z = 0.5;
-          }
-          else if(angle_diff < -0.5)
-          {
-            cmd_vel.angular.z = -0.5;
-          }
-          else {
-            cmd_vel.angular.z = angle_diff;
-          }
-          cmd_vel.linear.x = 0;
-          this->vel_pub_.publish(cmd_vel);
-
-          //更新angle_diff
-          this->getCartoPose(carto_data);
-          angle_diff = updateAngleDiff(carto_data,goal2_pose);
-          angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
+          robot_start_x = carto_data.pose.position.x;
+          robot_start_y = carto_data.pose.position.y;
+          robot_start_t = tf::getYaw(carto_data.pose.orientation);
           ros::spinOnce();
-        }
-        publishZeroVelocity();
-        ROS_INFO("turn end");
-        DETECT_PLANNER_LOG("turn end");
+      }
+      double robot_current_x = robot_start_x;
+      double robot_current_y = robot_start_y;
+      double distance, distance2, diff_distance;
 
-        //判断电梯是否到达目标楼层
+
+      //获取激光数据
+      std::vector<std::pair<double, double> > laser_point;
+      this->getLaserPoint(laser_point);//使用回调函数赋值
+      count_step = 0;
+      while ((ros::Time::now().toSec() - this->receive_laser_time_.toSec()) > 0.5 &&
+             !move_base_cancel_) //如果激光没有数据，等待10s，如果还没有，退出恢复
+      {
+          DETECT_PLANNER_LOG("can't get scan data");
+          ROS_INFO("can't get scan data");
+          if (count_step++ > 10) {
+              subShutDown();
+              feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
+              feedback_.feedback_text = "not init, can't get scan data";
+              as_.publishFeedback(feedback_);
+              return false;
+          }
+          ros::Duration(1).sleep();
+          this->getLaserPoint(laser_point);
+          ros::spinOnce();
+      }
+
+      //部分变量声明和初始化
+      bool go_forward = false;
+      bool intoDone = false;//是否已经完成进入
+      geometry_msgs::Twist cmd_vel;
+      double start_time, end_time, interval_time;
+      double x_diff, y_diff, x_diff2, y_diff2, angle_diff;
+      geometry_msgs::Pose global_pose, goal_pose, goal2_pose;
+      this->getCartoPose(carto_data);
+      global_pose = carto_data.pose;
+
+      //目标点1 也就是乘梯点
+      goal_pose.position.x = takePoint.position.x;
+      goal_pose.position.y = takePoint.position.y;
+
+      //目标点2 也就是候梯点
+      goal2_pose.position.x = waitPoint.position.x;
+      goal2_pose.position.y = waitPoint.position.y;
+
+      x_diff2 = goal2_pose.position.x - global_pose.position.x;
+      y_diff2 = goal2_pose.position.y - global_pose.position.y;
+      distance2 = sqrt((x_diff2 * x_diff2) + (y_diff2 * y_diff2)); //距离候梯点的距离
+      x_diff = goal_pose.position.x - global_pose.position.x;
+      y_diff = goal_pose.position.y - global_pose.position.y;
+      distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));      //机器人距离目标点的距离长度
+      //初始点判断 其实没必要，留作不时之需
+      if (distance2 > 10) {
+          ROS_ERROR("robot not in waiting point");
+          feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
+          feedback_.feedback_text = "not init, robot not in waiting point";
+          as_.publishFeedback(feedback_);
+          return false;
+      }
+      //进入状态机
+      switch (state_) {
+          case PART1: {
+              //调整机器人转角方向
+              DETECT_PLANNER_LOG("ento part1");
+              this->getCartoPose(carto_data);
+              global_pose = carto_data.pose;
+              angle_diff = normalizeAngle(updateAngleDiff(carto_data, goal_pose), -M_PI, M_PI);
+              ROS_INFO_ONCE("part1 angle diff =  %.2f", angle_diff);
+              ros::spinOnce();
+              ROS_INFO_ONCE("Robot initial posture correction start");
+              if (fabs(angle_diff) > 0.1) {
+                  if (angle_diff > 0.5) {
+                      cmd_vel.angular.z = 0.5;
+                  } else if (angle_diff < -0.5) {
+                      cmd_vel.angular.z = -0.5;
+                  } else {
+                      cmd_vel.angular.z = angle_diff;
+                  }
+                  cmd_vel.linear.x = 0;
+                  this->vel_pub_.publish(cmd_vel);
+              } else {
+                  publishZeroVelocity();
+                  ROS_INFO("Robot initial posture correction end");
+                  DETECT_PLANNER_LOG("Robot initial posture correction end");
+                  state_ = PART2;
+              }
+              break;
+          }
+          case PART2: {
+              //直行到电梯门口
+              DETECT_PLANNER_LOG("ento part2");
+              feedback_.feedback = robot_msg::auto_elevatorFeedback::ENTER_ELEVATOR;
+              feedback_.feedback_text = "enter elevator";
+              as_.publishFeedback(feedback_);
+              this->getLaserPoint(laser_point);//获取下最新的激光数据
+              go_forward = HaveObstacles(laser_point, 0.3, 0.35);
+              if (!go_forward) {
+                  publishZeroVelocity();
+                  start_time = ros::Time::now().sec;
+                  interval_time = 0;
+                  while (ros::ok() && interval_time < 15 && !go_forward) {
+                      ROS_INFO("please move your body");
+                      end_time = ros::Time::now().sec;
+                      interval_time = end_time - start_time;
+                      std::cout << "waiting you move time = " << interval_time << std::endl;
+                      r.sleep();
+                      this->getLaserPoint(laser_point);//获取下最新的激光数据
+                      go_forward = HaveObstacles(laser_point, 0.3, 0.35);
+                  }
+                  if (interval_time >= 15) {
+                      publishZeroVelocity();
+                      DETECT_PLANNER_LOG("Unable to enter elevator, return to origin!");
+                      ROS_INFO("Unable to enter elevator, return to origin!");
+                      this->getCartoPose(carto_data);
+                      robot_current_x = carto_data.pose.position.x;
+                      robot_current_y = carto_data.pose.position.y;
+
+                      double diff_x = robot_current_x - goal2_pose.position.x;
+                      double diff_y = robot_current_y - goal2_pose.position.y;
+                      double overDistance;
+
+                      overDistance = sqrt(diff_x * diff_x + diff_y * diff_y);//已经行走的距离
+                      ROS_INFO_ONCE("part2 toWaitPointDistance =  %.2f", overDistance);
+                      goback(overDistance + 0.01);
+                      ROS_INFO("return waiting point");
+                      DETECT_PLANNER_LOG("return waiting point");
+                      feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE;
+                      feedback_.feedback_text = "failure, return waiting point";
+                      as_.publishFeedback(feedback_);
+                      return false;//退出程序
+                  }
+              } else {
+                  //更新已走距离
+                  this->getCartoPose(carto_data);
+                  global_pose = carto_data.pose;
+                  x_diff = goal_pose.position.x - global_pose.position.x;
+                  y_diff = goal_pose.position.y - global_pose.position.y;
+                  x_diff2 = goal2_pose.position.x - global_pose.position.x;
+                  y_diff2 = goal2_pose.position.y - global_pose.position.y;
+
+                  distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));
+                  distance2 = sqrt((x_diff2 * x_diff2) + (y_diff2 * y_diff2)); //距离候梯点的距离
+                  ROS_INFO_ONCE("part2 goal distance =  %.2f", distance);
+                  angle_diff = normalizeAngle(updateAngleDiff(carto_data, goal_pose), -M_PI, M_PI);
+                  ros::spinOnce();
+                  if (distance >= 0.8) //没到电梯口
+                  {
+                      if (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 1) {
+                          cmd_vel.angular.z = (angle_diff / 2);
+                      } else {
+                          cmd_vel.angular.z = angle_diff;
+                      }
+                      cmd_vel.linear.x = 0.2;
+                      this->vel_pub_.publish(cmd_vel);
+                  } else {
+                      state_ = PART3;
+                  }
+              }
+              break;
+          }
+          case PART3: {
+              //直行进入电梯
+              DETECT_PLANNER_LOG("ento part3");
+              feedback_.feedback = robot_msg::auto_elevatorFeedback::ENTER_ELEVATOR;
+              feedback_.feedback_text = "enter elevator";
+              as_.publishFeedback(feedback_);
+              this->getLaserPoint(laser_point);//获取下最新的激光数据
+              go_forward = HaveObstacles(laser_point, 0.2, 0.35);
+              if (!go_forward) {
+                  publishZeroVelocity();
+                  start_time = ros::Time::now().sec;
+                  interval_time = 0;
+                  while (ros::ok() && interval_time < 15 && !go_forward) {
+                      ROS_INFO("please move your body");
+                      end_time = ros::Time::now().sec;
+                      interval_time = end_time - start_time;
+                      std::cout << "waiting you move time = " << interval_time << std::endl;
+                      r.sleep();
+                      this->getLaserPoint(laser_point);//获取下最新的激光数据
+                      go_forward = HaveObstacles(laser_point, 0.3, 0.35);
+                  }
+                  if (interval_time >= 15) {
+                      publishZeroVelocity();
+                      DETECT_PLANNER_LOG("Unable to enter elevator, return to origin!");
+                      ROS_INFO("Unable to enter elevator, return to origin!");
+                      this->getCartoPose(carto_data);
+                      robot_current_x = carto_data.pose.position.x;
+                      robot_current_y = carto_data.pose.position.y;
+
+                      double diff_x = robot_current_x - goal2_pose.position.x;
+                      double diff_y = robot_current_y - goal2_pose.position.y;
+                      double overDistance;
+
+                      overDistance = sqrt(diff_x * diff_x + diff_y * diff_y);//已经行走的距离
+                      ROS_INFO_ONCE("part 3 toWaitPointDistance  =  %.2f", overDistance);
+                      goback(overDistance + 0.01);
+                      ROS_INFO("return waiting point");
+                      DETECT_PLANNER_LOG("return waiting point");
+                      feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE;
+                      feedback_.feedback_text = "failure, return waiting point";
+                      as_.publishFeedback(feedback_);
+                      return false;//退出程序
+                  }
+              } else {
+                  //更新已走距离
+                  this->getCartoPose(carto_data);
+                  global_pose = carto_data.pose;
+                  x_diff = goal_pose.position.x - global_pose.position.x;
+                  y_diff = goal_pose.position.y - global_pose.position.y;
+                  x_diff2 = goal2_pose.position.x - global_pose.position.x;
+                  y_diff2 = goal2_pose.position.y - global_pose.position.y;
+
+                  distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));
+                  distance2 = sqrt((x_diff2 * x_diff2) + (y_diff2 * y_diff2)); //距离候梯点的距离
+                  ROS_INFO_ONCE("part3 goal distance = %.2f", distance);
+                  angle_diff = normalizeAngle(updateAngleDiff(carto_data, goal_pose), -M_PI, M_PI);
+                  ros::spinOnce();
+                  if (distance >= 0.4 || distance2 <= 1.2) //没到电梯里
+                  {
+                      if (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 1) {
+                          cmd_vel.angular.z = (angle_diff / 2);
+                      } else {
+                          cmd_vel.angular.z = angle_diff;
+                      }
+                      cmd_vel.linear.x = 0.1;
+                      this->vel_pub_.publish(cmd_vel);
+                  } else if (distance < 0.4 && distance2 > 1.2) {
+                      ROS_INFO("I came in!");
+                      DETECT_PLANNER_LOG("I came in!");
+                      state_ = PART4;
+                  }
+              }
+              break;
+          }
+          case PART4: {
+              //电梯内小范围前进，到达乘梯点，到不了就停下。
+              DETECT_PLANNER_LOG("ento part4");
+              feedback_.feedback = robot_msg::auto_elevatorFeedback::ENTER_ELEVATOR;
+              feedback_.feedback_text = "enter elevator";
+              as_.publishFeedback(feedback_);
+              this->getLaserPoint(laser_point);//获取下最新的激光数据
+              go_forward = HaveObstacles(laser_point, 0.15, 0.35);
+              if (!go_forward) {
+                  ROS_INFO("i have obs !");
+                  DETECT_PLANNER_LOG("i have obs!");
+                  publishZeroVelocity();
+                  intoDone = true;
+                  ROS_INFO("i am stop here!");
+                  DETECT_PLANNER_LOG("i am stop here!");
+                  state_ = PART5;
+              } else {
+                  //更新已走距离和角度
+                  this->getCartoPose(carto_data);
+                  global_pose = carto_data.pose;
+                  x_diff = goal_pose.position.x - global_pose.position.x;
+                  y_diff = goal_pose.position.y - global_pose.position.y;
+                  x_diff2 = goal2_pose.position.x - global_pose.position.x;
+                  y_diff2 = goal2_pose.position.y - global_pose.position.y;
+
+                  distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));
+                  distance2 = sqrt((x_diff2 * x_diff2) + (y_diff2 * y_diff2)); //距离候梯点的距离
+                  ROS_INFO_ONCE("part4 in ele, goal distance =  %.2f", distance);
+                  angle_diff = normalizeAngle(updateAngleDiff(carto_data, goal_pose), -M_PI, M_PI);
+                  ros::spinOnce();
+                  if (distance > 0.05 && distance2 < 1.55) {
+                      if (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 1) {
+                          cmd_vel.angular.z = (angle_diff / 2);
+                      } else {
+                          cmd_vel.angular.z = angle_diff;
+                      }
+                      cmd_vel.linear.x = 0.1;
+                      this->vel_pub_.publish(cmd_vel);
+                  }
+                  if (distance <= 0.05 || distance2 >= 1.55) {
+                      publishZeroVelocity();
+                      intoDone = true;
+                      state_ = PART5;
+                  }
+              }
+              break;
+          }
+          case PART5: {
+              //调整机器人转角方向
+              DETECT_PLANNER_LOG("ento part5");
+              this->getCartoPose(carto_data);
+              global_pose = carto_data.pose;
+              angle_diff = normalizeAngle(updateAngleDiff(carto_data, goal2_pose), -M_PI, M_PI);
+              ROS_INFO_ONCE("part5 angle diff  =  %.2f", angle_diff);
+              ros::spinOnce();
+              ROS_INFO_ONCE("Robot second posture correction start");
+              if (fabs(angle_diff) > 0.1) {
+                  if (angle_diff > 0.5) {
+                      cmd_vel.angular.z = 0.5;
+                  } else if (angle_diff < -0.5) {
+                      cmd_vel.angular.z = -0.5;
+                  } else {
+                      cmd_vel.angular.z = angle_diff;
+                  }
+                  cmd_vel.linear.x = 0;
+                  this->vel_pub_.publish(cmd_vel);
+              } else {
+                  publishZeroVelocity();
+                  ROS_INFO("Robot second posture correction end");
+                  DETECT_PLANNER_LOG("Robot initial posture correction end");
+                  //乘坐电梯时间 show time
+                  interval_time = 0;
+                  start_time = ros::Time::now().sec;
+                  ros::Rate ra(1);
+                  while (ros::ok() && interval_time < 5 && go_forward == false && !move_base_cancel_) {
+                      ROS_INFO_ONCE("---Ride in an elevator---");
+                      end_time = ros::Time::now().sec;
+                      interval_time = end_time - start_time;
+                      ra.sleep();
+                      std::cout << "intrtval_time = " << interval_time << std::endl;
+                      //std::cout << "start_time = " << start_time << std::endl;
+                  }
+                  if (interval_time >= 5) {
+                      ROS_INFO("Arrived at the designated floor");
+                      DETECT_PLANNER_LOG("Arrived at the designated floor");
+                      feedback_.feedback = robot_msg::auto_elevatorFeedback::TAKE_THE_ELEVATOR;
+                      feedback_.feedback_text = "take the elevator";
+                      as_.publishFeedback(feedback_);
+
+                      doorOpen_ = true;
+                      state_ = PART6;
+                  }
+                  //判断电梯是否到达目标楼层的预写代码
 //        ros::Rate r(10);
 //        getElevatorState(ele_data_);
 //        while(ele_data_.current_floor != target_floor && ros::ok() && !move_base_cancel_)
@@ -678,128 +596,78 @@ namespace detect_planner {
 //          as_.publishFeedback(feedback_);
 //          ROS_INFO("please open elevator door");
 //        }
-
-        //到达目标楼层并且门也开了，机器人开始尝试出门 本部分结束
-
-
-        //乘坐电梯时间 show time
-        ros::Rate r(20);
-        uint8_t count = 0;
-        DETECT_PLANNER_LOG("---Ride in an elevator---");
-        while(ros::ok() && count++ < 80 && !move_base_cancel_)
-        {
-          ROS_INFO("---Ride in an elevator---");
-          r.sleep();
-          ros::spinOnce();
-        }
-        ROS_INFO("Arrived at the designated floor");
-        DETECT_PLANNER_LOG("Arrived at the designated floor");
-        feedback_.feedback = robot_msg::auto_elevatorFeedback::TAKE_THE_ELEVATOR;
-        feedback_.feedback_text = "take the elevator";
-        as_.publishFeedback(feedback_);
-
-        doorOpen_ = true;
-
-
-        break;
-      }
-
-      //第五部分 出电梯
-      //调整位姿态
-      this->getCartoPose(carto_data); //获取下carto的信息，更新启始点
-      global_pose = carto_data.pose;
-
-      x_diff = goal2_pose.position.x - global_pose.position.x;
-      y_diff = goal2_pose.position.y - global_pose.position.y;
-      distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));//距离目标点2的距离
-
-      angle_diff = updateAngleDiff(carto_data,goal2_pose);
-      angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
-      std::cout << "goal2 angle_diff = " << angle_diff << std::endl;
-      ROS_INFO("sencond robot posture correction start");
-      DETECT_PLANNER_LOG("sencond robot posture correction start");
-      while (ros::ok() && fabs(angle_diff) > 0.1 && !move_base_cancel_) {
-        cmd_vel.angular.z =  (angle_diff / 2.0);
-        cmd_vel.linear.x = 0;
-        this->vel_pub_.publish(cmd_vel);
-
-        //更新angle_diff
-        this->getCartoPose(carto_data);
-        angle_diff = updateAngleDiff(carto_data,goal2_pose);
-        angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
-        ros::spinOnce();
-      }
-      publishZeroVelocity();
-      ROS_INFO("second robot  posture correction end");
-      DETECT_PLANNER_LOG("sencond robot posture correction end");
-
-      //出电梯直行
-      feedback_.feedback = robot_msg::auto_elevatorFeedback::GET_OUT_ELEVATOR;
-      feedback_.feedback_text = "get out elevator";
-      as_.publishFeedback(feedback_);
-
-//      getElevatorState(ele_data_);
-//      doorOpen_ = ele_data_.door_status;
-      while(ros::ok() && doorOpen_ && distance > 0.02 && !move_base_cancel_)
-      {
-        this->getLaserPoint(laser_point);//获取下最新的激光数据
-        go_forward = HaveObstacles(laser_point,0.4,0.35);
-        if(go_forward == false)
-        {
-          publishZeroVelocity();
-          ROS_INFO("please move your body");//持续等待 直到可以出门
-          ros::Rate r(20);
-          uint8_t count = 0;
-          while(ros::ok() && count++ < 20 && !move_base_cancel_)
-          {
-            r.sleep();
-            ros::spinOnce();
+              }
+              break;
           }
-          ROS_INFO("1 have sleep 1s !");
-        }
-        else {
-          if(fabs(angle_diff) > 0.01 && fabs(angle_diff) < 0.5)
-          {
-            cmd_vel.angular.z = (angle_diff / 2);
-          }
-          else {
-            cmd_vel.angular.z = 0;
-          }
-          cmd_vel.linear.x = 0.1;
-          this->vel_pub_.publish(cmd_vel);
+          case PART6: {
+              //出电梯
+              DETECT_PLANNER_LOG("ento part6");
+              feedback_.feedback = robot_msg::auto_elevatorFeedback::GET_OUT_ELEVATOR;
+              feedback_.feedback_text = "get out elevator";
+              as_.publishFeedback(feedback_);
+              this->getLaserPoint(laser_point);//获取下最新的激光数据
+              go_forward = HaveObstacles(laser_point, 0.25, 0.35);
+              if (!go_forward) {
+                  if (distance2 < 0.8 && distance > 0.8) {
+                      publishZeroVelocity();
+                      ROS_INFO_ONCE("part6 out elevator,goal2 distance =  %.2f goal distance= %.2f", distance2,distance);
+                      ROS_INFO("detect planner end in advance");
+                      DETECT_PLANNER_LOG("detect planner end in advance");
+                      feedback_.feedback = robot_msg::auto_elevatorFeedback::SUCCESS;
+                      feedback_.feedback_text = "detect planner success!";
+                      as_.publishFeedback(feedback_);
+                  } else {
+                      publishZeroVelocity();
+                      ROS_INFO("please move your body");
+                      r.sleep();
+                      ros::spinOnce();
+                  }
+              } else {
+                  this->getCartoPose(carto_data);
+                  global_pose = carto_data.pose;
+                  x_diff = goal_pose.position.x - global_pose.position.x;
+                  y_diff = goal_pose.position.y - global_pose.position.y;
+                  x_diff2 = goal2_pose.position.x - global_pose.position.x;
+                  y_diff2 = goal2_pose.position.y - global_pose.position.y;
 
-          //更新angle_diff
-          this->getCartoPose(carto_data);
-          angle_diff = updateAngleDiff(carto_data,goal2_pose);
-          angle_diff = normalizeAngle(angle_diff,-M_PI,M_PI);
-        }
-        //更新一下距离目标点2的距离
-        this->getCartoPose(carto_data);
-        global_pose = carto_data.pose;
-        x_diff = goal2_pose.position.x - global_pose.position.x;
-        y_diff = goal2_pose.position.y - global_pose.position.y;
-        distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));//距离目标点2的距离
-        std::cout << "out distance = " << distance << std::endl;
-        if(distance < 1.2)
-        {
-          intoDone = false;
-        }
-        if(distance < 0.02)
-        {
-          publishZeroVelocity();
-          ROS_INFO("detect planner end");
-          DETECT_PLANNER_LOG("detect planner end");
-          feedback_.feedback = robot_msg::auto_elevatorFeedback::SUCCESS;
-          feedback_.feedback_text = "detect planner success!";
-          as_.publishFeedback(feedback_);
+                  distance = sqrt((x_diff * x_diff) + (y_diff * y_diff));
+                  distance2 = sqrt((x_diff2 * x_diff2) + (y_diff2 * y_diff2)); //距离候梯点的距离
+                  ROS_INFO_ONCE("part6 out elevator,goal2 distance =  %.2f", distance2);
+                  angle_diff = normalizeAngle(updateAngleDiff(carto_data, goal2_pose), -M_PI, M_PI);
+                  ros::spinOnce();
+                  if (distance2 < 0.8 && distance > 0.8) {
+                      intoDone = false;
+                  }
+                  if (distance2 > 0.05 && distance < 1.55) {
+                      if (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 0.5) {
+                          cmd_vel.angular.z = (angle_diff / 2);
+                      } else {
+                          cmd_vel.angular.z = angle_diff;
+                      }
+                      cmd_vel.linear.x = 0.2;
+                      this->vel_pub_.publish(cmd_vel);
+                  } else if (distance2 <= 0.05 || distance >= 1.55) {
+                      publishZeroVelocity();
+                      publishZeroVelocity();
+                      ROS_INFO("detect planner end");
+                      DETECT_PLANNER_LOG("detect planner end");
+                      feedback_.feedback = robot_msg::auto_elevatorFeedback::SUCCESS;
+                      feedback_.feedback_text = "detect planner success!";
+                      as_.publishFeedback(feedback_);
 
-          return true;
-        }
-        ros::spinOnce();
+                      return true;
+                  }
+              }
+              break;
+          }
+          default: {
+              feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE;
+              feedback_.feedback_text = "failure, default";
+              as_.publishFeedback(feedback_);
+              return false;//退出程序
+          }
       }
-    }
-    ros::spinOnce();
-}
+  }
   bool DetectPlanner::HaveObstacles(std::vector<std::pair<double, double> > sensor_point, double x, double y)
   {
     size_t index = 0;
