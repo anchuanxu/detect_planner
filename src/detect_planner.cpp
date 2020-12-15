@@ -63,7 +63,6 @@ namespace detect_planner {
       getLaserTobaselinkTF(laser_frame_, base_frame_);
       move_base_cancel_ = false;
       pi = 3.55;
-      takEleCount = 0;
       doorOpen_ = false;
       record_log_ = false;
       if(DETECT_PLANNER_RECORD)
@@ -246,7 +245,7 @@ namespace detect_planner {
       }
       double robot_current_x = robot_start_x;
       double robot_current_y = robot_start_y;
-      double distance, distance2, diff_distance;
+      double distance, distance2;
 
 
       //获取激光数据
@@ -354,7 +353,7 @@ namespace detect_planner {
                   }
                   if (interval_time >= 15) {
                       publishZeroVelocity();
-                      DETECT_PLANNER_LOG("Unable to enter elevator, return to origin!");
+                      DETECT_PLANNER_LOG("Unable to enter elevator, return to o rigin!");
                       ROS_INFO("Unable to enter elevator, return to origin!");
                       this->getCartoPose(carto_data);
                       robot_current_x = carto_data.pose.position.x;
@@ -388,6 +387,9 @@ namespace detect_planner {
                   ROS_INFO_ONCE("part2 goal distance =  %.2f", distance);
                   angle_diff = normalizeAngle(updateAngleDiff(carto_data, goal_pose), -M_PI, M_PI);
                   ros::spinOnce();
+                  double k, b;
+                  k = -0.1875; //速度平滑斜率
+                  b = 0.35;
                   if (distance >= 0.8) //没到电梯口
                   {
                       if (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 1) {
@@ -395,7 +397,14 @@ namespace detect_planner {
                       } else {
                           cmd_vel.angular.z = angle_diff;
                       }
-                      cmd_vel.linear.x = 0.2;
+                      if(distance > 1.6)
+                      {
+                          cmd_vel.linear.x = 0.05;
+                      }
+                      else if(distance >= 0.8 && distance <= 1.6)
+                      {
+                          cmd_vel.linear.x = k * distance + b;
+                      }
                       this->vel_pub_.publish(cmd_vel);
                   } else {
                       state_ = PART3;
@@ -460,6 +469,7 @@ namespace detect_planner {
                   ROS_INFO_ONCE("part3 goal distance = %.2f", distance);
                   angle_diff = normalizeAngle(updateAngleDiff(carto_data, goal_pose), -M_PI, M_PI);
                   ros::spinOnce();
+                  double k = 0.25;
                   if (distance >= 0.4 || distance2 <= 1.2) //没到电梯里
                   {
                       if (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 1) {
@@ -467,7 +477,7 @@ namespace detect_planner {
                       } else {
                           cmd_vel.angular.z = angle_diff;
                       }
-                      cmd_vel.linear.x = 0.1;
+                      cmd_vel.linear.x = distance * k;
                       this->vel_pub_.publish(cmd_vel);
                   } else if (distance < 0.4 && distance2 > 1.2) {
                       ROS_INFO("I came in!");
@@ -507,13 +517,21 @@ namespace detect_planner {
                   ROS_INFO_ONCE("part4 in ele, goal distance =  %.2f", distance);
                   angle_diff = normalizeAngle(updateAngleDiff(carto_data, goal_pose), -M_PI, M_PI);
                   ros::spinOnce();
+                  double k = 0.25;
                   if (distance > 0.05 && distance2 < 1.55) {
                       if (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 1) {
                           cmd_vel.angular.z = (angle_diff / 2);
                       } else {
                           cmd_vel.angular.z = angle_diff;
                       }
-                      cmd_vel.linear.x = 0.1;
+                      if(distance > 0.2 && distance <= 0.4)
+                      {
+                          cmd_vel.linear.x = k * distance;
+                      }
+                      else if (distance > 0.05 && distance <= 0.2)
+                      {
+                          cmd_vel.linear.x = 0.05;
+                      }
                       this->vel_pub_.publish(cmd_vel);
                   }
                   if (distance <= 0.05 || distance2 >= 1.55) {
@@ -557,7 +575,6 @@ namespace detect_planner {
                       interval_time = end_time - start_time;
                       ra.sleep();
                       std::cout << "intrtval_time = " << interval_time << std::endl;
-                      //std::cout << "start_time = " << start_time << std::endl;
                   }
                   if (interval_time >= 5) {
                       ROS_INFO("Arrived at the designated floor");
@@ -635,6 +652,11 @@ namespace detect_planner {
                   ROS_INFO_ONCE("part6 out elevator,goal2 distance =  %.2f", distance2);
                   angle_diff = normalizeAngle(updateAngleDiff(carto_data, goal2_pose), -M_PI, M_PI);
                   ros::spinOnce();
+                  double k1, k2, b1, b2;
+                  k1 = 0.125;
+                  k2 = -0.5;
+                  b1 = 0.05;
+                  b2 = 0.8;
                   if (distance2 < 0.8 && distance > 0.8) {
                       intoDone = false;
                   }
@@ -644,10 +666,21 @@ namespace detect_planner {
                       } else {
                           cmd_vel.angular.z = angle_diff;
                       }
-                      cmd_vel.linear.x = 0.2;
+                      if (distance >= 0 && distance <= 1.2)
+                      {
+                          cmd_vel.linear.x = k1 * distance + b1;
+                      }
+                      else if (distance > 1.2 && distance <= 1.6)
+                      {
+                          cmd_vel.linear.x = k2 * distance + b2;
+                      }
+                      else if (distance > 1.6)
+                      {
+                          cmd_vel.linear.x = 0;
+                          publishZeroVelocity();
+                      }
                       this->vel_pub_.publish(cmd_vel);
                   } else if (distance2 <= 0.05 || distance >= 1.55) {
-                      publishZeroVelocity();
                       publishZeroVelocity();
                       ROS_INFO("detect planner end");
                       DETECT_PLANNER_LOG("detect planner end");
@@ -756,9 +789,10 @@ namespace detect_planner {
   }
   void DetectPlanner::getOdomData(nav_msgs::Odometry &data)
   {
-    ros::Time now = ros::Time::now();
-    if(now.toSec() - this->odom_data_.header.stamp.toSec() > 0.5){
-      return;
+      //boost::mutex::scoped_lock lock(this->get_odom_mutex_);
+        ros::Time now = ros::Time::now();
+        if(now.toSec() - this->odom_data_.header.stamp.toSec() > 0.5){
+            return;
     }
     data = this->odom_data_;
   }
@@ -794,16 +828,18 @@ namespace detect_planner {
   }
   void DetectPlanner::getCartoPose(robot_msg::SlamStatus &data)
   {
-    ros::Time now = ros::Time::now();
-    if(now.toSec() - this->carto_data_.header.stamp.toSec() > 5){
-        ROS_INFO("time delay 5s ");
-        return;
+      boost::mutex::scoped_lock lock(this->get_carto_mutex_);
+      ros::Time now = ros::Time::now();
+      if(now.toSec() - this->carto_data_.header.stamp.toSec() > 5){
+          ROS_INFO("time delay 5s ");
+          return;
     }
     data = this->carto_data_;
   }
   void DetectPlanner::getLaserPoint(std::vector<std::pair<double, double> > &data)
   {
-    data = this->point_vec_;
+      boost::mutex::scoped_lock lock(this->get_laser_mutex_);
+      data = this->point_vec_;
   }
   void DetectPlanner::getLaserTobaselinkTF(std::string sensor_frame, std::string base_frame)
   {

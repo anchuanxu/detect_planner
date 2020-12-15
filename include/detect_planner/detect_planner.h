@@ -125,7 +125,6 @@ namespace detect_planner{
       std::string base_frame_, laser_frame_;
       bool    initialized_;
       bool    doorOpen_;
-      uint8_t takEleCount;
 
       //action
       ros::NodeHandle ah_,ph_;
@@ -144,9 +143,9 @@ namespace detect_planner{
       //data
       ros::Time receive_laser_time_;
       std::vector<std::pair<double,double>> point_vec_;
-      sensor_msgs::LaserScan laser_data_;
-      nav_msgs::Odometry odom_data_;
-      robot_msg::SlamStatus carto_data_;
+      sensor_msgs::LaserScan   laser_data_;
+      nav_msgs::Odometry       odom_data_;
+      robot_msg::SlamStatus    carto_data_;
       robot_msg::ElevatorState ele_data_;
 
       //mutex
@@ -156,6 +155,7 @@ namespace detect_planner{
       boost::mutex ele_mutex_;
       boost::mutex get_laser_mutex_;
       boost::mutex get_odom_mutex_;
+      boost::mutex get_carto_mutex_;
       boost::mutex cancle_mutex_;
 
       //tf
