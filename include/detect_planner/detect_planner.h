@@ -104,9 +104,11 @@ namespace detect_planner{
 
       void executeCB(const robot_msg::auto_elevatorGoalConstPtr& goal);
 
-      bool runPlan(geometry_msgs::Pose takePoint, geometry_msgs::Pose waitPoint, int target_floor);
+      bool runPlan(geometry_msgs::Pose takePoint, geometry_msgs::Pose waitPoint, int current_floor, int target_floor);
 
       void preemptCB();
+
+      double Distance(geometry_msgs::Pose PointA, geometry_msgs::Pose PointB);
 
       double inline normalizeAngle(double val, double min, double max)
       {
@@ -119,12 +121,14 @@ namespace detect_planner{
       }
 
       //global variable
-      ros::NodeHandle *nh_;
-      bool move_base_cancel_;
-      double pi;
+      //ros::NodeHandle *nh_;
+      bool        move_base_cancel_;
+      double      pi;
       std::string base_frame_, laser_frame_;
-      bool    initialized_;
-      bool    doorOpen_;
+      double      elevatorLong_, elevatorWide_;
+      double      robotRadius_;
+      bool        initialized_;
+      bool        doorOpen_;
 
       //action
       ros::NodeHandle ah_,ph_;
