@@ -17,4 +17,4 @@ Changelog for package detect_planner
 1.0.0 (2020-12-22)
 -------------------
 * Action_server 1.0 version
-* Stable performance and BUG fixes
+* Stable performance and BUG fixeds
