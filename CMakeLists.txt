@@ -11,6 +11,7 @@ find_package(catkin REQUIRED
     tf2
     tf2_geometry_msgs
     tf2_ros
+    robot_msg
 )
 
 include_directories(
@@ -31,6 +32,7 @@ catkin_package(
     tf2
     tf2_ros
 )
+
 
 add_library(detect_planner src/detect_planner.cpp)
 add_dependencies(detect_planner ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})

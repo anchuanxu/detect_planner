@@ -24,6 +24,7 @@
 #include <tf2_ros/transform_listener.h>
 #include <actionlib/server/simple_action_server.h>
 #include <robot_msg/auto_elevatorAction.h>
+#include <geometry_msgs/Polygon.h>
 
 #include <fstream>
 #include <ctime>
@@ -33,12 +34,12 @@ namespace detect_planner{
 
     enum DetectPlannerState
     {
-        PART1,
-        PART2,
-        PART3,
-        PART4,
-        PART5,
-        PART6
+        OUTDOOR_ANGLE_ADJ,
+        GO_STRAIGHT_OUTDOOR,
+        GO_STRAIGHT_ACROSSDOOR,
+        GO_STRAIGHT_INDOOR,
+        INELE_ANGLE_ADJ,
+        OUTOF_ELEVATOR
     };
 
   #define DETECT_PLANNER_RECORD 1
@@ -55,8 +56,6 @@ namespace detect_planner{
        */
       void initialize();
 
-      //void Init(int current_floor, geometry_msgs::Pose takepose,
-               // int target_floor,  geometry_msgs::Pose waitpose);
 
       /**
        * @brief Given a goal pose in the world, compute a plan
@@ -72,31 +71,15 @@ namespace detect_planner{
 
       void publishZeroVelocity();
 
-      void getLaserData(sensor_msgs::LaserScan& data);
-
-      void getCartoPose(robot_msg::SlamStatus& data);
-
-      void getElevatorState(robot_msg::ElevatorState& data);
-
-      void getLaserPoint(std::vector< std::pair<double,double> >& data);
-
-      void getOdomData(nav_msgs::Odometry& data);
-
-      void odomCallback(const nav_msgs::Odometry::ConstPtr& msg);
-
       void cartoCallback(const robot_msg::SlamStatus::ConstPtr& msg);
 
-      void elevatorCallback(const robot_msg::ElevatorState::ConstPtr& msg);
-
       void movebaseCancelCallback(const actionlib_msgs::GoalID::ConstPtr& msg);
-
-      void subShutDown();
 
       void getLaserTobaselinkTF(std::string sensor_frame, std::string base_frame);
 
       double updateAngleDiff(robot_msg::SlamStatus carto, geometry_msgs::Pose  goal);
 
-      bool HaveObstacles(std::vector<std::pair<double,double>> sensor_point,double x,double y);
+      bool HaveObstacles(geometry_msgs::Polygon sensor_point,double x,double y);
 
       void goback(double distance);
 
@@ -121,14 +104,14 @@ namespace detect_planner{
       }
 
       //global variable
-      //ros::NodeHandle *nh_;
       bool        move_base_cancel_;
       double      pi;
       std::string base_frame_, laser_frame_;
       double      elevatorLong_, elevatorWide_;
       double      robotRadius_;
       bool        initialized_;
-      bool        doorOpen_;
+      bool        closeCango, midCango, farCango;
+      bool        closeHavePoint, midHavePoint, farHavePoint;
 
       //action
       ros::NodeHandle ah_,ph_;
@@ -139,28 +122,22 @@ namespace detect_planner{
       DetectPlannerState               state_;
 
       //sub
-      ros::Subscriber laser_sub_,odom_sub_,mbc_sub_,carto_sub_,elevator_sub_;
+      ros::Subscriber laser_sub_, mbc_sub_, carto_sub_;
 
       //pub
       ros::Publisher  vel_pub_;
 
       //data
       ros::Time receive_laser_time_;
-      std::vector<std::pair<double,double>> point_vec_;
+      geometry_msgs::Polygon   point_vec_;
       sensor_msgs::LaserScan   laser_data_;
-      nav_msgs::Odometry       odom_data_;
       robot_msg::SlamStatus    carto_data_;
-      robot_msg::ElevatorState ele_data_;
 
       //mutex
       boost::mutex laser_mutex_;
-      boost::mutex odom_mutex_;
       boost::mutex carto_mutex_;
-      boost::mutex ele_mutex_;
-      boost::mutex get_laser_mutex_;
-      boost::mutex get_odom_mutex_;
-      boost::mutex get_carto_mutex_;
       boost::mutex cancle_mutex_;
+      boost::mutex state_mutex_;
 
       //tf
       tf::StampedTransform transform;

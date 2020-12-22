@@ -3,5 +3,8 @@
     <node name="detect_planner"  pkg="detect_planner"  type="detect_planner" output="screen" respawn="true" >
         <param name="base_frame"           type="string"   value="base_link"/>
         <param name="laser_frame"          type="string"   value="laser"/>
+        <param name="elevatorLong"         type="double"   value="1.6"/>
+        <param name="elevatorWide"         type="double"   value="2.0"/>
+        <param name="robotRadius"          type="double"   value="0.225"/>
     </node>
 </launch>
