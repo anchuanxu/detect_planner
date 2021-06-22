@@ -112,7 +112,9 @@ namespace detect_planner{
 
       //global variable
       bool        move_base_cancel_;
+      bool        cartoJump;
       double      pi;
+      double      MaxSpeed;
       std::string base_frame_,   laser_frame_;
       double      elevatorLong_, elevatorWide_;
       double      robotRadius_;
@@ -122,9 +124,11 @@ namespace detect_planner{
       bool        robotStop;
       bool        robotImuAngleJudge;
       double      t1, t2, t;
-      double      robotImuAngle0, robotImuAngle1, robotImuAngle2, robotImuAngleDiff;
+      double      robotImuAngle0, robotImuAngle1, robotImuAngle2, robotImuAngle3, robotImuAngle4, robotImuAngleDiff;
       double      recivedNewGoalTime, recivedNewGoalTimeEnd;
       bool        initOdomStartPose;
+      double      delt_p, current_p, previous_p, previous_delt_p;
+      double      delt_o, current_o, previous_o, previous_delt_o;
       geometry_msgs::Pose  odomPoseStart;
 
       //action

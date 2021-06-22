@@ -54,16 +54,20 @@ namespace detect_planner {
       getLaserTobaselinkTF(laser_frame_, base_frame_);
       move_base_cancel_ = false;
       pi = 3.55;
+      MaxSpeed = 0.5;
       record_log_ = false;
       closeCango = false;
       midCango = false;
       farCango = false;
       robotStop = true;
+      cartoJump = false;
       robotImuAngleJudge = false;
       initOdomStartPose = false;
       t = t1 = t2 = 0.0;
       recivedNewGoalTime = recivedNewGoalTimeEnd = 0.0;
-      robotImuAngle0 = robotImuAngle1 = robotImuAngle2 = robotImuAngleDiff = 0.0;
+      robotImuAngle0 = robotImuAngle1 = robotImuAngle2 = robotImuAngle3 = robotImuAngle4 = robotImuAngleDiff = 0.0;
+      delt_p = current_p = previous_p = previous_delt_p = 0.0;
+      delt_o = current_o = previous_o = previous_delt_o = 0.0;
 
       if(DETECT_PLANNER_RECORD)
       {
@@ -183,10 +187,19 @@ namespace detect_planner {
       if(feedback_.feedback == robot_msg::auto_elevatorFeedback::FAILURE)
       {
         result_.result = false;
-        as_.setSucceeded(result_);
+        as_.setAborted(result_, "failed, defalut state i don't know why");
+        ROS_ERROR("failed, defalut state i don't know why");
         ROS_INFO("---take elevator failure---");
         return ;
       }
+        if (feedback_.feedback == robot_msg::auto_elevatorFeedback::FAILURE_FULL)
+        {
+            result_.result = false;
+            as_.setAborted(result_, "full-failed ,waiting next elevator");
+            ROS_ERROR("full-failed ,waiting next elevator");
+            ROS_INFO("---take elevator failure---");
+            return ;
+        }
       r.sleep();
     }
   }
@@ -208,6 +221,7 @@ namespace detect_planner {
 
       //部分变量声明和初始化
       bool go_forward = false;
+      //bool cartoJump  = false;
       geometry_msgs::Twist cmd_vel;
       double start_time, end_time, interval_time;
       double angle_diff;
@@ -218,8 +232,8 @@ namespace detect_planner {
       double dp2, dp3;
       toleranceDistance = 0.1;
 
-      dp2 = (elevatorLong_ / 2) + robotRadius_ + toleranceDistance;
-      dp3 = (elevatorLong_ / 2) - robotRadius_ - toleranceDistance;
+      dp2 = (2 * elevatorLong_ / 3) + robotRadius_ + toleranceDistance; //乘梯点位默认设置在电梯往里2/3处
+      dp3 = (2 * elevatorLong_ / 3) - robotRadius_ - toleranceDistance; //乘梯点位默认设置在电梯往里2/3处
 
       global_pose = carto_data_.pose;
       odomPoseNow = odom_data_.pose.pose;
@@ -248,7 +262,6 @@ namespace detect_planner {
               } else {
                   publishZeroVelocity();
                   robotImuAngle0 = tf::getYaw(imu_data_.orientation); //record now imu angle
-                  //ROS_INFO("robotImuAngle0 = %.2frad",robotImuAngle0);
                   ROS_INFO("Robot initial posture correction end");
                   DETECT_PLANNER_LOG("Part1 end");
                   state_ = GO_STRAIGHT_OUTDOOR;
@@ -285,16 +298,17 @@ namespace detect_planner {
                       distance2 = Distance(global_pose,waitPoint); //已经行走的距离
                       ROS_INFO_ONCE("Part2 Robot to waitPoint distance =  %.2fm", distance2);
                       goback(distance2);
-
-                      ROS_INFO("return waiting point");
-                      DETECT_PLANNER_LOG("return waiting point");
-                      feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE;
-                      feedback_.feedback_text = "failure, return waiting point";
+                      publishZeroVelocity();
+                      ROS_INFO("returned waiting point");
+                      DETECT_PLANNER_LOG("returned waiting point");
+                      feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE_FULL;
+                      feedback_.feedback_text = "failure full, return waiting point";
                       as_.publishFeedback(feedback_);
 
                       return false;//退出程序
                   }
-              } else {
+              }
+              else {
                   //更新已走距离
                   if (robotStop == true)
                   {
@@ -308,7 +322,7 @@ namespace detect_planner {
                   ROS_INFO_ONCE("Part2 Robot to takePoint distance =  %.2fm", distance);
                   angle_diff = normalizeAngle(updateAngleDiff(carto_data_, takePoint), -M_PI, M_PI);
                   double k, b;
-                  k = 0.5; //速度平滑斜率
+                  k = 2; //速度平滑斜率
                   b = 0.1;
                   if (distance >= dp2) //没到电梯口
                   {
@@ -318,35 +332,19 @@ namespace detect_planner {
                           cmd_vel.angular.z = (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 1) ? (angle_diff / 2) : angle_diff;
                       }
 
-//                      if(distance > totalDistance && distance2 > 0)
-//                      {
-//                          cmd_vel.linear.x = (k * distance2 + b) >= 0.35 ? 0.35 : k * distance2 + b;
-//                      }
-                        if(distance2 <= 0.6)
+                      if(distance2 <= 0.6)
                       {
-                          if(robotStop == true || t != 0)
-                          {
                               t2 = ros::Time::now().sec;
                               t = t2 - t1;
-                              cmd_vel.linear.x = (k * t / 10 + b) >= 0.35 ? 0.35 : k * t / 10 + 0.05;
+                              cmd_vel.linear.x = (k * t / 10 + b) >= MaxSpeed ? MaxSpeed : k * t / 10 + 0.05;
                               robotStop = false;
-                          }
-                          else{
-                              cmd_vel.linear.x = (k * distance2 + b) >= 0.35 ? 0.35 : k * distance2 + b;
-                          }
                       }
                       else if(distance2 > 0.6 && distance2 <= totalDistance - dp2)
                       {
-                          if(robotStop == true || t != 0)
-                          {
                               t2 = ros::Time::now().sec;
                               t = t2 - t1;
-                              cmd_vel.linear.x = (k * t / 10 + 0.05) >= 0.35 ? 0.35 : k * t / 10 + 0.05;
+                              cmd_vel.linear.x = (k * t / 10 + 0.05) >= MaxSpeed ? MaxSpeed : k * t / 10 + 0.05;
                               robotStop = false;
-                          }
-                          else{
-                              cmd_vel.linear.x = 0.35;
-                          }
                       }
                       this->vel_pub_.publish(cmd_vel);
                   } else {
@@ -364,7 +362,7 @@ namespace detect_planner {
               feedback_.feedback_text = "enter elevator";
               as_.publishFeedback(feedback_);
 
-              go_forward = midCango;
+              go_forward = farCango;
               if (!go_forward) {
                   robotStop = true;
                   publishZeroVelocity();
@@ -378,7 +376,7 @@ namespace detect_planner {
                       interval_time = end_time - start_time;
                       std::cout << "waiting you move time = " << interval_time << "s" << std::endl;
                       r2.sleep();
-                      go_forward = midCango;
+                      go_forward = farCango;
                   }
                   if (interval_time >= 2) {
                       publishZeroVelocity();
@@ -387,14 +385,17 @@ namespace detect_planner {
                       distance2 = Distance(global_pose,waitPoint); // 机器人距离候梯点的距离
                       ROS_INFO_ONCE("Part 3 Robot to waitPoint distance  =  %.2fm", distance2);
                       goback(distance2);
-                      ROS_INFO("return waiting point");
-                      DETECT_PLANNER_LOG("return waiting point");
-                      feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE;
-                      feedback_.feedback_text = "failure, return waiting point";
+                      publishZeroVelocity();
+                      ROS_INFO("returned waiting point");
+                      DETECT_PLANNER_LOG("returned waiting point");
+                      feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE_FULL;
+                      feedback_.feedback_text = "failure full, return waiting point";
                       as_.publishFeedback(feedback_);
+
                       return false;//退出程序
                   }
-              } else {
+              }
+              else {
                   //更新已走距离
                   global_pose = carto_data_.pose;
                   distance = Distance(global_pose,takePoint); // 机器人距离乘梯点的距离
@@ -403,8 +404,8 @@ namespace detect_planner {
                   angle_diff = normalizeAngle(updateAngleDiff(carto_data_, takePoint), -M_PI, M_PI);
 
                   double k, b;
-                  k = 0.5;
-                  b = 0.1;
+                  k = 2;
+                  b = 0.15;
                   if (distance >= dp3 || distance2 <= (toleranceDistance - dp3)) //没到电梯里
                   {
                       if (fabs(angle_diff) > 1) {
@@ -412,7 +413,7 @@ namespace detect_planner {
                       }else{
                           cmd_vel.angular.z = (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 1) ? (angle_diff / 2) : angle_diff;
                       }
-                      cmd_vel.linear.x  = (robotStop == true) ? 0.15 : ((distance * k + b) >= 0.35 ? 0.35 : distance * k + b);
+                      cmd_vel.linear.x  = (robotStop == true) ? 0.15 : ((distance * k + b) >= MaxSpeed ? MaxSpeed : distance * k + b);
                       this->vel_pub_.publish(cmd_vel);
                   } else if (distance < dp3 && distance2 > (toleranceDistance - dp3)) {
                       ROS_INFO("Robot came in!");
@@ -428,7 +429,7 @@ namespace detect_planner {
               feedback_.feedback = robot_msg::auto_elevatorFeedback::ENTER_ELEVATOR;
               feedback_.feedback_text = "enter elevator";
               as_.publishFeedback(feedback_);
-              go_forward = closeCango;
+              go_forward = farCango;
               if (!go_forward) {
                   ROS_INFO("The robot stops early when it encounters an obstacle!");
                   publishZeroVelocity();
@@ -440,8 +441,8 @@ namespace detect_planner {
                   distance2 = Distance(global_pose,waitPoint); // 机器人距离候梯点的距离
                   ROS_INFO_ONCE("Part4 in ele, Robot to takePoint distance =  %.2fm", distance);
                   angle_diff = normalizeAngle(updateAngleDiff(carto_data_, takePoint), -M_PI, M_PI);
-                  double k = 0.5;
-                  double b = 0.1;
+                  double k = 2;
+                  double b = 0.15;
                   if (distance > toleranceDistance && distance2 < (totalDistance - toleranceDistance)) {
                       if (fabs(angle_diff) > 1) {
                           cmd_vel.angular.z = (angle_diff > 0 ? 1 : -1) * 0.2;
@@ -450,13 +451,13 @@ namespace detect_planner {
                       }
                       if(distance >= 0.1)
                       {
-                          cmd_vel.linear.x = robotStop == true ? 0.15 : ((distance * k + b) >= 0.35 ? 0.35 : distance * k + b);
+                          cmd_vel.linear.x = robotStop == true ? 0.15 : ((distance * k + b) >= MaxSpeed ? MaxSpeed : distance * k + b);
                       }
-                      else if (distance < 0.1 && distance >= 0 && distance2 <= totalDistance)
+                      else if (distance < 0.1  && distance2 <= totalDistance)
                       {
                           cmd_vel.linear.x = 0.1;
                       }
-                      else if (distance > 0 && distance2 > totalDistance)
+                      else
                       {
                           cmd_vel.linear.x = 0;
                       }
@@ -490,12 +491,13 @@ namespace detect_planner {
                   feedback_.feedback_text = "enter success elevator";
                   as_.publishFeedback(feedback_);
 
+                  robotImuAngle4 = tf::getYaw(imu_data_.orientation) + angle_diff;
+
                   //use imu record robot angle
                   robotImuAngle1 = tf::getYaw(imu_data_.orientation);
-                  //ROS_INFO("robotImuAngle1 = %.2frad",robotImuAngle1);
                   robotImuAngleDiff = robotImuAngle1 - robotImuAngle0;
                   ROS_INFO("robotImuAngleDiff = %.2frad",robotImuAngleDiff);
-                  if (fabs(fabs(robotImuAngleDiff) - M_PI) > 0.1)
+                  if (fabs(fabs(robotImuAngleDiff) - M_PI) > 0.05)
                   {
                       double needTurnAngle;
                       needTurnAngle = (robotImuAngleDiff > 0 ? robotImuAngleDiff - M_PI : robotImuAngleDiff + M_PI);
@@ -542,7 +544,7 @@ namespace detect_planner {
                   robotImuAngle2 = tf::getYaw(imu_data_.orientation);
                   robotImuAngleDiff = normalizeAngle((robotImuAngle2 - robotImuAngle1), -M_PI, M_PI);
                   ROS_INFO("robotImuAngleDiff = %.2frad",robotImuAngleDiff);
-                  if (fabs(robotImuAngleDiff) > 0.1)
+                  if (fabs(robotImuAngleDiff) > 0.05)
                   {
                       turnAngle(-robotImuAngleDiff);
                       robotImuAngle2 = tf::getYaw(imu_data_.orientation);
@@ -566,7 +568,10 @@ namespace detect_planner {
               go_forward = farCango;
               if (!go_forward) {
                   robotStop = true;
-                  if (distance >= dp2 + 0.5) {
+                  global_pose = carto_data_.pose;
+                  distance = Distance(global_pose,takePoint); // 机器人距离乘梯点的距离
+
+                  if (distance >= dp2) {
                       publishZeroVelocity();
                       recivedNewGoalTimeEnd = ros::Time::now().sec;
                       ROS_INFO("out elevator use time = %.2fs", (recivedNewGoalTimeEnd - recivedNewGoalTime));
@@ -576,6 +581,9 @@ namespace detect_planner {
                       robotStop = true;
                       robotImuAngleJudge = false;
                       initOdomStartPose = false;
+                      cartoJump = false;
+                      delt_p = current_p = previous_p = previous_delt_p = 0.0;
+                      delt_o = current_o = previous_o = previous_delt_o = 0.0;
 
                       ROS_INFO("Part8 out elevator, Robot to waitPoint distance =  %.2fm, to takePoint distance= %.2fm", distance2,distance);
                       ROS_INFO("detect planner end in advance");
@@ -590,8 +598,12 @@ namespace detect_planner {
                       publishZeroVelocity();
                       ROS_INFO("please move your body");
                       //angle judge
-                      global_pose = carto_data_.pose;
-                      angle_diff = normalizeAngle(updateAngleDiff(carto_data_, waitPoint), -M_PI, M_PI);
+                      robotImuAngle3 = tf::getYaw(imu_data_.orientation);
+                      robotImuAngleDiff = normalizeAngle((robotImuAngle3 - robotImuAngle2), -M_PI, M_PI);
+                      ROS_INFO("robotImuAngleDiff = %.2frad",robotImuAngleDiff);
+
+                      angle_diff = -robotImuAngleDiff;
+
                       ROS_INFO_ONCE("Part8 angle diff  =  %.2frad", angle_diff);
                       if (fabs(angle_diff) > 0.1) {
                           if (fabs(angle_diff) > 1) {
@@ -603,17 +615,44 @@ namespace detect_planner {
                           this->vel_pub_.publish(cmd_vel);
                       }
                   }
-              } else {
+              }
+              else {
                   if (robotStop == true)
                   {
                       t1 = ros::Time::now().sec;
                       ros::Rate r2(1);
                       r2.sleep();
                   }
-                  global_pose = carto_data_.pose;
-                  distance = Distance(global_pose,takePoint); // 机器人距离乘梯点的距离
-                  distance2 = Distance(global_pose,waitPoint); // 机器人距离候梯点的距离
-                  //ROS_INFO("now carto distance to waitPoint = %.2f, to takePoint = %.2f", distance2, distance);
+
+                  if (cartoJump == false)
+                  {
+                      global_pose = carto_data_.pose;
+                      distance = Distance(global_pose,takePoint); // 机器人距离乘梯点的距离
+                      distance2 = Distance(global_pose,waitPoint); // 机器人距离候梯点的距离
+                  }
+                  else{
+                      distance = previous_p + delt_o;
+                      ROS_INFO("odom + carto distance = %.2f", distance);
+                  }
+                  current_p = distance;
+                  if (previous_p == 0.0)
+                  {
+                      previous_p = current_p;
+                  }
+                  delt_p = current_p - previous_p;
+
+                  if (delt_p > 3 * fabs(previous_delt_p) && !cartoJump && fabs(delt_p - previous_delt_p) > 0.19 && fabs(previous_delt_p) > 0.03) //carto jump!!!
+                  {
+                      distance = previous_p + delt_o;
+                      current_p = distance;
+                      cartoJump = true;
+                      ROS_ERROR("carto data jump!!!");
+                      ROS_INFO("delt_p = %.2f, previous_delt_p = %.2f ", delt_p, previous_delt_p);
+                      ROS_WARN("carto distance = %.2f", distance);
+                      // TODO topic pub
+                  }
+                  previous_p = current_p;
+                  previous_delt_p = delt_p;
 
                   odomPoseNow = odom_data_.pose.pose;
                   if (!initOdomStartPose )
@@ -624,79 +663,44 @@ namespace detect_planner {
 
                   odomPoseNow = odom_data_.pose.pose;
                   odomDistance = Distance(odomPoseNow,odomPoseStart);
-                  //ROS_INFO("now odom distance to takePoint = %.2f",odomDistance);
-                  ROS_INFO_ONCE("Part8 out elevator,Robot to waitPoint distance =  %.2fm", distance2);
-                  angle_diff = normalizeAngle(updateAngleDiff(carto_data_, waitPoint), -M_PI, M_PI);
+                  current_o = odomDistance;
+                  delt_o = current_o - previous_o;
+                  if (delt_o > 3 * fabs(previous_delt_o) && fabs(delt_o - previous_delt_o) > 0.1 && fabs(previous_delt_o) > 0.04)
+                  {
+                      ROS_ERROR("odom data jump !!!");
+                  }
+                  previous_o = current_o;
+                  previous_delt_o = delt_o;
+
+                  //ROS_INFO("distanceP = %.2f, distanceO = %.2f",distance, odomDistance);
+                  //ROS_WARN("delt_p = %.2f, delt_o = %.2f", delt_p, delt_o);
+
+                  robotImuAngle3 = tf::getYaw(imu_data_.orientation);
+                  robotImuAngleDiff = normalizeAngle((robotImuAngle3 - robotImuAngle4), -M_PI, M_PI);
+                  //ROS_INFO("robotImuAngleDiff = %.2frad",robotImuAngleDiff);
+                  angle_diff = -robotImuAngleDiff;
+
+
                   double k1, k2, b1, b2;
-                  k1 = 0.5;
+                  k1 = 2;
                   k2 = 1.5;
                   b1 = 0.1;
                   b2 = 0.05;
 
-                  if (odomDistance > totalDistance + 0.1)
-                  {
-                      publishZeroVelocity();
-                      ROS_INFO("odom distance = %.2fm over totaldistance, detect_planner end!", odomDistance);
-                      ROS_INFO("carto distance = %.2fm, detect_planner end!", distance);
-                      t = 0.0; //reset time
-                      recivedNewGoalTimeEnd = 0.0;
-                      recivedNewGoalTime = 0.0;
-                      robotStop = true;
-                      robotImuAngleJudge = false;
-                      initOdomStartPose = false;
-
-                      ROS_INFO("odom distance over! detect planner end");
-                      DETECT_PLANNER_LOG("Part8 end, odom distance over! detect planner end")
-                      feedback_.feedback = robot_msg::auto_elevatorFeedback::SUCCESS;
-                      feedback_.feedback_text = "detect planner end!";
-                      as_.publishFeedback(feedback_);
-                      state_ = OUTDOOR_ANGLE_ADJ;
-
-                      return true;
-                  }
-
-                  if (distance2 > toleranceDistance && distance < (totalDistance - toleranceDistance)) {
+                  if (distance < totalDistance) {
                       if (fabs(angle_diff) > 1) {
                           cmd_vel.angular.z = (angle_diff > 0 ? 1 : -1) * 0.2;
                       }else{
                           cmd_vel.angular.z = (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 1) ? (angle_diff / 2) : angle_diff;
                       }
-                      if (distance >= 0 && distance <= 1.2)
+                      if (distance <= totalDistance - 0.2)
                       {
-                          if (robotStop == true || t != 0)
-                          {
                               t2 = ros::Time::now().sec;
                               t = t2 - t1;
-                              cmd_vel.linear.x = (k1 * t / 10 + 0.05) >= 0.35 ? 0.35 : k1 * t / 10 + 0.05;
+                              cmd_vel.linear.x = (k1 * t / 10 + 0.05) >= MaxSpeed ? MaxSpeed : k1 * t / 10 + 0.05;
                               robotStop = false;
-                          }
-                          else
-                          {
-                              cmd_vel.linear.x = (k1 * distance + b1 >= 0.35) ? 0.35 : k1 * distance + b1;
-                          }
-                      }
-                      else if (distance > 1.2 && distance <= (totalDistance - 0.2))
-                      {
-                          if (robotStop == true || t != 0)
-                          {
-                              t2 = ros::Time::now().sec;
-                              t = t2 - t1;
-                              cmd_vel.linear.x = (k1 * t / 10 + 0.05) >= 0.35 ? 0.35 : k1 * t / 10 + 0.05;
-                              robotStop = false;
-                          }
-                          else
-                          {
-                              cmd_vel.linear.x = 0.35;
-                          }
-                      }
-                      else if (distance > (totalDistance - 0.2) && distance2 < 0.2 && distance2 >= toleranceDistance)
-                      {
-                          cmd_vel.linear.x = (k2 * distance2 + b2) >= 0.35 ? 0.35 : k2 * distance2 + b2;
-                      }
-                      else if (distance2 < toleranceDistance || distance > (totalDistance - toleranceDistance))
-                      {
-                          cmd_vel.linear.x = 0;
-                          publishZeroVelocity();
+                      }else{
+                          cmd_vel.linear.x = (k2 * distance2 + b2) >= MaxSpeed ? MaxSpeed : k2 * distance2 + b2;
                       }
                       this->vel_pub_.publish(cmd_vel);
                   }
@@ -710,14 +714,17 @@ namespace detect_planner {
                   }
                   else
                   {
+                      publishZeroVelocity();
                       t = 0.0; //reset time
                       recivedNewGoalTimeEnd = 0.0;
                       recivedNewGoalTime = 0.0;
                       robotStop = true;
                       robotImuAngleJudge = false;
                       initOdomStartPose = false;
+                      cartoJump = false;
+                      delt_p = current_p = previous_p = previous_delt_p = 0.0;
+                      delt_o = current_o = previous_o = previous_delt_o = 0.0;
 
-                      publishZeroVelocity();
                       ROS_INFO("carto distance to takePoint = %.2fm",distance);
                       ROS_INFO("odom distance to takePoint = %.2fm",odomDistance);
                       ROS_INFO("detect planner end");
@@ -830,6 +837,7 @@ namespace detect_planner {
     geometry_msgs::Twist cmd_vel;
     cmd_vel.linear.y = 0.0;
     cmd_vel.angular.z = 0.0;
+    ROS_WARN("back start");
     while(ticks > 0)
     {
         ticks --;
@@ -837,8 +845,12 @@ namespace detect_planner {
         vel_pub_.publish(cmd_vel);
         r.sleep();
     }
+    ROS_WARN("back end");
     cmd_vel.linear.x = 0.0;
+    cmd_vel.angular.z = 0.0;
     vel_pub_.publish(cmd_vel);
+    ROS_WARN("pub 0 speed");
+    return;
   }
   void DetectPlanner::movebaseCancelCallback(const actionlib_msgs::GoalID::ConstPtr &msg)
   {
@@ -944,18 +956,18 @@ namespace detect_planner {
          if(tem_point.x > -0.1 && tem_point.x < 1.0 && fabs(tem_point.y) < 0.5)
          {
              //this->point_vec_.points.push_back(tem_point);
-             if(fabs(tem_point.x) <= 0.15 && fabs(tem_point.y) < 0.25)
+             if(fabs(tem_point.x) <= 0.2 && fabs(tem_point.y) < 0.25)
              {
                 closeHavePoint = true;
                 midHavePoint = true;
                 farHavePoint = true;
              }
-             else if (fabs(tem_point.x) <= 0.2 && fabs(tem_point.y) < 0.25)
+             else if (fabs(tem_point.x) <= 0.3 && fabs(tem_point.y) < 0.25)
              {
                  midHavePoint = true;
                  farHavePoint = true;
              }
-             else if (fabs(tem_point.x) <= 0.3 && fabs(tem_point.y) < 0.25)
+             else if (fabs(tem_point.x) <= 0.45 && fabs(tem_point.y) < 0.25)
              {
                  farHavePoint = true;
              }
