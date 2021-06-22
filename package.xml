@@ -12,6 +12,7 @@
     <author>chuanxu An</author>
     <author>chuanxu@iscas.ac.cn</author>
     <maintainer email="chuanxu@iscas.ac.cn">chuanxu An</maintainer>
+    <maintainer email="jiangzeyu@gziis.org">Zeyu Jiang</maintainer>
     <license>BSD</license>
     <url>http://wiki.ros.org/detect_planner</url>
 

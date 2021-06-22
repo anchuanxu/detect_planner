@@ -22,7 +22,7 @@ namespace detect_planner {
     //nh_ = nullptr;
     move_base_cancel_ = false;
     initialize();
-    state_ = OUTDOOR_ANGLE_ADJ;
+    state_ = NAV_TAKE;
     as_.start();
     ROS_INFO_STREAM("Action server " << action_name_ << " start!");
   }
@@ -31,12 +31,20 @@ namespace detect_planner {
     if(!initialized_){
       laser_sub_ = ah_.subscribe<sensor_msgs::LaserScan>("/scan",10,boost::bind(&DetectPlanner::scanCallback,this,_1));
       carto_sub_ = ah_.subscribe<robot_msg::SlamStatus>("/slam_status",20,boost::bind(&DetectPlanner::cartoCallback,this,_1));
-      mbc_sub_ = ah_.subscribe<actionlib_msgs::GoalID>("/move_base/cancel", 10, boost::bind(&DetectPlanner::movebaseCancelCallback, this, _1));
+    //   mbc_sub_ = ah_.subscribe<actionlib_msgs::GoalID>("/move_base/cancel", 10, boost::bind(&DetectPlanner::movebaseCancelCallback, this, _1));
+    //   imu_sub_ = ah_.subscribe<sensor_msgs::Imu>("/imu", 10, boost::bind(&DetectPlanner::imuCallback,this, _1));
+    //   odom_sub_ = ah_.subscribe<nav_msgs::Odometry>("/odom",10,boost::bind(&DetectPlanner::odomCallback,this, _1));
+      navigation_state_sub_ = ah_.subscribe<robot_msg::FeedBack>("/navi_state", 100, boost::bind(&DetectPlanner::naviStateCallback,this, _1));
+      elevator_state_sub_ = ah_.subscribe<robot_msg::ElevatorState>("/elevatorState", 10, boost::bind(&DetectPlanner::elevatorStateCallback, this, _1));
 
       vel_pub_ = ah_.advertise<geometry_msgs::Twist>("/cmd_vel",10);
+      //vel_pub_ = ah_.advertise<geometry_msgs::Twist>("/cmd_vel_mux/input/teleop",10);
+      goal_pub_  = ah_.advertise<geometry_msgs::PoseStamped>("move_base_simple/goal", 1);
+      goal_cancel_pub_ = ah_.advertise<actionlib_msgs::GoalID>("/move_base/cancel", 1);
 
       ph_.param<std::string>("base_frame", base_frame_, std::string("base_link"));
       ph_.param<std::string>("laser_frame", laser_frame_, std::string("laser"));
+      ph_.param<std::string>("map_frame", map_frame_, std::string("map"));
       ph_.param<double>("elevatorLong", elevatorLong_, double(1.6));
       ph_.param<double>("elevatorWide", elevatorWide_, double(2.0));
       ph_.param<double>("robotRadius", robotRadius_, double(0.225));
@@ -51,10 +59,23 @@ namespace detect_planner {
       getLaserTobaselinkTF(laser_frame_, base_frame_);
       move_base_cancel_ = false;
       pi = 3.55;
+      MaxSpeed = 0.5;
       record_log_ = false;
       closeCango = false;
       midCango = false;
       farCango = false;
+      robotStop = true;
+      cartoJump = false;
+      robotImuAngleJudge = false;
+      initOdomStartPose = false;
+      t = t1 = t2 = 0.0;
+      recivedNewGoalTime = recivedNewGoalTimeEnd = 0.0;
+      robotImuAngle0 = robotImuAngle1 = robotImuAngle2 = robotImuAngle3 = robotImuAngle4 = robotImuAngleDiff = 0.0;
+      delt_p = current_p = previous_p = previous_delt_p = 0.0;
+      delt_o = current_o = previous_o = previous_delt_o = 0.0;
+      takePointCanstand_ = true;
+      isJudged_ = false;
+      isUpdateNaviState_ = false;
 
       if(DETECT_PLANNER_RECORD)
       {
@@ -79,7 +100,10 @@ namespace detect_planner {
       initialized_ = true;
     }
     else
-      ROS_ERROR("This planner has already been initialized... doing nothing");
+    {
+        ROS_INFO("This planner has already been initialized... doing nothing");
+    }
+
   }
 
   DetectPlanner::~DetectPlanner()
@@ -89,14 +113,47 @@ namespace detect_planner {
 
   void DetectPlanner::executeCB(const robot_msg::auto_elevatorGoalConstPtr &goal)
   {
+    ROS_INFO("--- DetectPlanner::executeCB ---");
+    if (initialized_ == true)
+    {
+        feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
+        feedback_.feedback_text = "action server init";
+        as_.publishFeedback(feedback_);
+    }
+    else{
+       initialize();
+       initialized_ = true;
+       feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
+       feedback_.feedback_text = "action server init";
+       as_.publishFeedback(feedback_);
+    }
+
     geometry_msgs::Twist vel;
     geometry_msgs::Pose takePoint, waitPoint;
-    int current_floor_, target_floor_;
+    bool mode;
+
+    // flag intialization
+    takePointCanstand_ = true;
+    isJudged_ = false;
+    isUpdateNaviState_ = false;
+    isPublishGoal_ = false;
 
     takePoint = goal->takepose;
     waitPoint = goal->waitpose;
-    current_floor_ = goal->current_floor;
-    target_floor_  = goal->target_floor;
+    mode = goal->mode;
+    log_ << "received w.x = " << waitPoint.position.x << std::endl;
+    log_ << "received w.y = " << waitPoint.position.y << std::endl;
+    log_ << "received t.x = " << takePoint.position.x << std::endl;
+    log_ << "received t.y = " << takePoint.position.y << std::endl;
+    log_ << "into elevator ? " << mode << std::endl;
+
+    angle_T_to_W_ = std::atan2(waitPoint.position.y - takePoint.position.y, waitPoint.position.x - takePoint.position.x);
+    angle_W_to_T_ = std::atan2(takePoint.position.y - waitPoint.position.y, takePoint.position.x - waitPoint.position.x);
+    printf("angle_T_to_W_: %f, angle_W_to_T_: %f\n", angle_T_to_W_, angle_W_to_T_);
+
+    feedback_.feedback = robot_msg::auto_elevatorFeedback::SET_NEW_GOAL;
+    feedback_.feedback_text = "Receive new instructions";
+    as_.publishFeedback(feedback_);
 
     ros::Rate r(10);
     while (ros::ok())
@@ -109,8 +166,20 @@ namespace detect_planner {
 
           takePoint = new_goal.takepose;
           waitPoint = new_goal.waitpose;
-          current_floor_ = new_goal.current_floor;
-          target_floor_  = new_goal.target_floor;
+          mode = new_goal.mode;
+          recivedNewGoalTime = ros::Time::now().sec;
+          log_ << "robot should arrvied target floor !" << std::endl;
+          log_ << "received target w.x = " << waitPoint.position.x << std::endl;
+          log_ << "received target w.y = " << waitPoint.position.y << std::endl;
+          log_ << "received target t.x = " << takePoint.position.x << std::endl;
+          log_ << "received target t.y = " << takePoint.position.y << std::endl;
+          log_ << "out elevator ? " << !mode << std::endl;
+          angle_T_to_W_ = std::atan2(waitPoint.position.y - takePoint.position.y, waitPoint.position.x - takePoint.position.x);
+          angle_W_to_T_ = std::atan2(takePoint.position.y - waitPoint.position.y, takePoint.position.x - waitPoint.position.x);
+          printf("angle_T_to_W_: %f, angle_W_to_T_: %f\n", angle_T_to_W_, angle_W_to_T_);
+          feedback_.feedback = robot_msg::auto_elevatorFeedback::SET_NEW_GOAL;
+          feedback_.feedback_text = "Receive new instructions";
+          as_.publishFeedback(feedback_);
           ROS_INFO_THROTTLE(1, "detect planner, recive a new goal");
         }
         else {
@@ -127,7 +196,7 @@ namespace detect_planner {
         }
       }
       //执行主要逻辑
-      runPlan(takePoint,waitPoint,current_floor_,target_floor_);
+      runPlan(takePoint,waitPoint,mode);
       as_.publishFeedback(feedback_);
 
       if(feedback_.feedback == robot_msg::auto_elevatorFeedback::SUCCESS)
@@ -148,388 +217,255 @@ namespace detect_planner {
     }
   }
 
-  bool DetectPlanner::runPlan(geometry_msgs::Pose takePoint, geometry_msgs::Pose waitPoint, int current_floor, int target_floor) {
+  bool DetectPlanner::runPlan(geometry_msgs::Pose takePoint, geometry_msgs::Pose waitPoint, bool mode) {
 
       if (!initialized_) {
           ROS_ERROR("The planner has not been initialized, please call initialize() to use the planner");
-          feedback_.feedback = robot_msg::auto_elevatorFeedback::NONE;
+          feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE;
           feedback_.feedback_text = "not init";
           as_.publishFeedback(feedback_);
-
           return false;
       }
 
-      DETECT_PLANNER_LOG("detect planner start");
+      geometry_msgs::PoseStamped target_pose;
 
       move_base_cancel_ = false;
 
-//      feedback_.feedback = robot_msg::auto_elevatorFeedback::WAITING_ELEVATOR;
-//      feedback_.feedback_text = "waiting elevator";
-//      as_.publishFeedback(feedback_);
-
-
       ROS_INFO_ONCE("---detect planner started!---");
-      feedback_.feedback = robot_msg::auto_elevatorFeedback::SET_NEW_GOAL;
-      feedback_.feedback_text = "set new goal";
-      as_.publishFeedback(feedback_);
+
 
       //部分变量声明和初始化
       bool go_forward = false;
-      bool intoDone = false;//是否已经完成进入
+      //bool cartoJump  = false;
       geometry_msgs::Twist cmd_vel;
       double start_time, end_time, interval_time;
       double angle_diff;
       geometry_msgs::Pose global_pose;
       double distance, distance2, totalDistance, toleranceDistance;
+      double odomDistance = 0.0;
+      geometry_msgs::Pose  odomPoseNow;
       double dp2, dp3;
+      toleranceDistance = 0.1;
 
       dp2 = (elevatorLong_ / 2) + robotRadius_ + toleranceDistance;
       dp3 = (elevatorLong_ / 2) - robotRadius_ - toleranceDistance;
 
-      global_pose = carto_data_.pose;
+      global_pose = carto_pose_.pose;
+      odomPoseNow = odom_data_.pose.pose;
 
-      toleranceDistance = 0.05;
+
       totalDistance = Distance(waitPoint,takePoint); // 两点之间全长
       distance = Distance(global_pose,takePoint); // 机器人距离乘梯点的距离
       distance2 = Distance(global_pose,waitPoint); // 机器人距离候梯点的距离
 
       //进入状态机
       switch (state_) {
-          case OUTDOOR_ANGLE_ADJ: {
-              //调整机器人转角方向
-
-              DETECT_PLANNER_LOG("OUTDOOR_ANGLE_ADJ");
-
-              angle_diff = normalizeAngle(updateAngleDiff(carto_data_, takePoint), -M_PI, M_PI);
-              ROS_INFO_ONCE("part1 angle diff =  %.2f", angle_diff);
-              ROS_INFO_ONCE("Robot initial posture correction start");
-
-              if (fabs(angle_diff) > 0.1) {
-                  if (angle_diff > 0.5) {
-                      cmd_vel.angular.z = 0.5;
-                  } else if (angle_diff < -0.5) {
-                      cmd_vel.angular.z = -0.5;
-                  } else if (angle_diff >= -0.5 && angle_diff <= 0.5){
-                      cmd_vel.angular.z = angle_diff;
-                  }
-
-                  cmd_vel.linear.x = 0;
-                  this->vel_pub_.publish(cmd_vel);
-              } else {
-                  publishZeroVelocity();
-                  ROS_INFO("Robot initial posture correction end");
-                  DETECT_PLANNER_LOG("Robot initial posture correction end");
-                  state_ = GO_STRAIGHT_OUTDOOR;
-              }
-              ros::spinOnce();
-              break;
-          }
-          case GO_STRAIGHT_OUTDOOR: {
-              //直行到电梯门口
-              DETECT_PLANNER_LOG("GO_STRAIGHT_OUTDOOR");
+          case NAV_TAKE: {
               feedback_.feedback = robot_msg::auto_elevatorFeedback::ENTER_ELEVATOR;
-              feedback_.feedback_text = "enter elevator";
+              feedback_.feedback_text = "navi to take point";
               as_.publishFeedback(feedback_);
-              go_forward = farCango;
-              if (!go_forward) {
-                  publishZeroVelocity();
-                  ros::Rate r2(1);
-                  start_time = ros::Time::now().sec;
-                  interval_time = 0;
-                  while (ros::ok() && interval_time < 10 && !go_forward) {
-                      ROS_INFO("please move your body");
-                      end_time = ros::Time::now().sec;
-                      interval_time = end_time - start_time;
-                      std::cout << "waiting you move time = " << interval_time << std::endl;
-                      r2.sleep();
-                      go_forward = farCango;
-                  }
-                  if (interval_time >= 10) {
-                      publishZeroVelocity();
-                      DETECT_PLANNER_LOG("Unable to enter elevator, return to o rigin!");
-                      ROS_INFO("Unable to enter elevator, return to origin!");
-                      global_pose = carto_data_.pose;
-                      distance2 = Distance(global_pose,waitPoint); //已经行走的距离
-                      ROS_INFO_ONCE("part2 toWaitPointDistance =  %.2f", distance2);
-                      goback(distance2);
 
-                      ROS_INFO("return waiting point");
-                      DETECT_PLANNER_LOG("return waiting point");
-                      feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE;
-                      feedback_.feedback_text = "failure, return waiting point";
-                      as_.publishFeedback(feedback_);
+              if (!isPublishGoal_)
+              {
+                  target_pose.header.frame_id = map_frame_;
+                  target_pose.pose = takePoint;
+                  geometry_msgs::Quaternion temp_q = tf::createQuaternionMsgFromYaw(angle_T_to_W_);
+                  target_pose.pose.orientation = temp_q;
+                  goal_pub_.publish(target_pose);
+                  ROS_INFO("publish take point");
+                  isPublishGoal_ = true;
+              }
 
-                      return false;//退出程序
-                  }
-              } else {
-                  //更新已走距离
-                  global_pose = carto_data_.pose;
-                  distance = Distance(global_pose,takePoint); // 机器人距离乘梯点的距离
-                  distance2 = Distance(global_pose,waitPoint); // 机器人距离候梯点的距离
-                  ROS_INFO_ONCE("part2 goal distance =  %.2f", distance);
-                  angle_diff = normalizeAngle(updateAngleDiff(carto_data_, takePoint), -M_PI, M_PI);
-                  double k, b;
-                  k = 0.5; //速度平滑斜率
-                  b = 0.05;
-                  if (distance >= dp2) //没到电梯口
+              naviStateFeedback_ = navi_state_.feedback;
+              if ((naviStateFeedback_ == 100) || (naviStateFeedback_ == 103) ) // in planning or controlling 
+              {
+                  isUpdateNaviState_ = true;
+              }
+
+              if (takePointCanstand_ || isJudged_)
+              {
+                  isJudged_ = true;
+                  naviStateFeedback_ = navi_state_.feedback;
+                  if (naviStateFeedback_ == 104 && isUpdateNaviState_)
                   {
-                      if (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 1) {
-                          cmd_vel.angular.z = (angle_diff / 2);
-                      } else {
-                          cmd_vel.angular.z = angle_diff;
-                      }
-                      if(distance > totalDistance && distance2 > 0)
-                      {
-                          cmd_vel.linear.x = 0.05;
-                      }
-                      else if(distance2 <= 0.6 && distance2 >= 0 && distance <= totalDistance)
-                      {
-                          cmd_vel.linear.x = k * distance2 + b;
-                      }
-                      else if(distance2 > 0.6 && distance2 <= totalDistance - dp2)
-                      {
-                          cmd_vel.linear.x = 0.35;
-                      }
-                      this->vel_pub_.publish(cmd_vel);
-                  } else {
-                      state_ = GO_STRAIGHT_ACROSSDOOR;
-                  }
-              }
-              ros::spinOnce();
-              break;
-          }
-          case GO_STRAIGHT_ACROSSDOOR: {
-              //直行进入电梯
-              DETECT_PLANNER_LOG("GO_STRAIGHT_ACROSSDOOR");
-              feedback_.feedback = robot_msg::auto_elevatorFeedback::ENTER_ELEVATOR;
-              feedback_.feedback_text = "enter elevator";
-              as_.publishFeedback(feedback_);
-              go_forward = midCango;
-              if (!go_forward) {
-                  publishZeroVelocity();
-                  ros::Rate r2(1);
-                  start_time = ros::Time::now().sec;
-                  interval_time = 0;
-                  while (ros::ok() && interval_time < 2 && !go_forward) {
-                      ROS_INFO("please move your body");
-                      end_time = ros::Time::now().sec;
-                      interval_time = end_time - start_time;
-                      std::cout << "waiting you move time = " << interval_time << std::endl;
-                      r2.sleep();
-                      go_forward = midCango;
-                  }
-                  if (interval_time >= 2) {
-                      publishZeroVelocity();
-                      DETECT_PLANNER_LOG("Unable to enter elevator, return to origin!");
-                      ROS_INFO("Unable to enter elevator, return to origin!");
-                      global_pose = carto_data_.pose;
-                      distance2 = Distance(global_pose,waitPoint); // 机器人距离候梯点的距离
-                      ROS_INFO_ONCE("part 3 toWaitPointDistance  =  %.2f", distance2);
-                      goback(distance2);
-                      ROS_INFO("return waiting point");
-                      DETECT_PLANNER_LOG("return waiting point");
-                      feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE;
-                      feedback_.feedback_text = "failure, return waiting point";
+                      ROS_INFO("into elevator take point success");
+                      feedback_.feedback = robot_msg::auto_elevatorFeedback::ENTER_SUCCESS;
+                      feedback_.feedback_text = "enter success elevator";
                       as_.publishFeedback(feedback_);
-                      return false;//退出程序
+                      state_ = TAKE;
+                      isPublishGoal_ = false;
+                      isJudged_ = false;
+                      isUpdateNaviState_ = false;
                   }
-              } else {
-                  //更新已走距离
-                  global_pose = carto_data_.pose;
-                  distance = Distance(global_pose,takePoint); // 机器人距离乘梯点的距离
-                  distance2 = Distance(global_pose,waitPoint); // 机器人距离候梯点的距离
-                  ROS_INFO_ONCE("part3 goal distance = %.2f", distance);
-                  angle_diff = normalizeAngle(updateAngleDiff(carto_data_, takePoint), -M_PI, M_PI);
-
-                  double k, b;
-                  k = 0.3;
-                  b = 0.0275;
-                  if (distance >= dp3 || distance2 <= (toleranceDistance - dp3)) //没到电梯里
-                  {
-                      if (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 1) {
-                          cmd_vel.angular.z = (angle_diff / 2);
-                      } else {
-                          cmd_vel.angular.z = angle_diff;
-                      }
-                      cmd_vel.linear.x = distance * k + b;
-                      this->vel_pub_.publish(cmd_vel);
-                  } else if (distance < dp3 && distance2 > (toleranceDistance - dp3)) {
-                      ROS_INFO("I came in!");
-                      DETECT_PLANNER_LOG("I came in!");
-                      state_ = GO_STRAIGHT_INDOOR;
-                  }
-              }
-              ros::spinOnce();
-              break;
-          }
-          case GO_STRAIGHT_INDOOR: {
-              //电梯内小范围前进，到达乘梯点，到不了就停下。
-              DETECT_PLANNER_LOG("GO_STRAIGHT_INDOOR");
-              feedback_.feedback = robot_msg::auto_elevatorFeedback::ENTER_ELEVATOR;
-              feedback_.feedback_text = "enter elevator";
-              as_.publishFeedback(feedback_);
-              go_forward = closeCango;
-              if (!go_forward) {
-                  ROS_INFO("i have obs !");
-                  DETECT_PLANNER_LOG("i have obs!");
-                  publishZeroVelocity();
-                  intoDone = true;
-                  ROS_INFO("i am stop here!");
-                  DETECT_PLANNER_LOG("i am stop here!");
-                  state_ = INELE_ANGLE_ADJ;
-              } else {
-                  //更新已走距离和角度
-                  global_pose = carto_data_.pose;
-                  distance = Distance(global_pose,takePoint); // 机器人距离乘梯点的距离
-                  distance2 = Distance(global_pose,waitPoint); // 机器人距离候梯点的距离
-                  ROS_INFO_ONCE("part4 in ele, goal distance =  %.2f", distance);
-                  angle_diff = normalizeAngle(updateAngleDiff(carto_data_, takePoint), -M_PI, M_PI);
-                  double k = 0.3;
-                  double b = 0.0275;
-                  if (distance > toleranceDistance && distance2 < (totalDistance - toleranceDistance)) {
-                      if (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 1) {
-                          cmd_vel.angular.z = (angle_diff / 2);
-                      } else {
-                          cmd_vel.angular.z = angle_diff;
-                      }
-                      if(distance >= 0.075)
+                  else if(naviStateFeedback_ == 101 || naviStateFeedback_ == 102 || naviStateFeedback_ == 106 || naviStateFeedback_ == 107){
+                      double distanceRto = Distance(carto_pose_.pose, takePoint);
+                      if (distanceRto < 0.5) //机器人身子已进入电梯，0.1为容错, 距离waitpoint小于1m，认为已经进入电梯
                       {
-                          cmd_vel.linear.x = distance * k + b;
+                          actionlib_msgs::GoalID  goalCancel;
+                          goal_cancel_pub_.publish(goalCancel);
+                          ROS_INFO("into elevator door stand success， nearby");
+                          feedback_.feedback = robot_msg::auto_elevatorFeedback::ENTER_SUCCESS;
+                          feedback_.feedback_text = "enter success elevator";
+                          as_.publishFeedback(feedback_);
+                          state_ = TAKE;
+                          isPublishGoal_ = false;
+                          isUpdateNaviState_ = false;
+                          isJudged_ = false;
                       }
-                      else if (distance < 0.075 && distance >= 0 && distance2 <= totalDistance)
-                      {
-                          cmd_vel.linear.x = 0.05;
+                      else {
+                          std::cout << "distanceRtoT = " << distanceRto << "; 2 * robotRadius_ + 0.1 = " << 2 * robotRadius_ + 0.1 << std::endl;
+                          state_ = RETURN_WAIT_AREA;
+                          isPublishGoal_ = false;
+                          isUpdateNaviState_ = false;
+                          isJudged_ = false;
                       }
-                      else if (distance > 0 && distance2 > totalDistance)
-                      {
-                          cmd_vel.linear.x = 0;
-                      }
-                      this->vel_pub_.publish(cmd_vel);
-                  }
-                  if (distance <= toleranceDistance || distance2 >= (totalDistance - toleranceDistance)) {
-                      publishZeroVelocity();
-                      intoDone = true;
-                      state_ = INELE_ANGLE_ADJ;
-                  }
-              }
-              ros::spinOnce();
-              break;
-          }
-          case INELE_ANGLE_ADJ: {
-              //调整机器人转角方向
-              DETECT_PLANNER_LOG("INELE_ANGLE_ADJ");
-              global_pose = carto_data_.pose;
-              angle_diff = normalizeAngle(updateAngleDiff(carto_data_, waitPoint), -M_PI, M_PI);
-              ROS_INFO_ONCE("part5 angle diff  =  %.2f", angle_diff);
-              ROS_INFO_ONCE("Robot second posture correction start");
-              if (fabs(angle_diff) > 0.1) {
-                  if (angle_diff > 0.5) {
-                      cmd_vel.angular.z = 0.5;
-                  } else if (angle_diff < -0.5) {
-                      cmd_vel.angular.z = -0.5;
-                  } else {
-                      cmd_vel.angular.z = angle_diff;
-                  }
-                  cmd_vel.linear.x = 0;
-                  this->vel_pub_.publish(cmd_vel);
-              }
-              else{
-                  publishZeroVelocity();
-                  ROS_INFO_ONCE("Robot second posture correction end");
-
-                  if (current_floor == target_floor) {
-                      ROS_INFO("Arrived at the %d floor", target_floor);
-                      log_ << "Arrived at the " << target_floor << " floor!" << std::endl;
-                      feedback_.feedback = robot_msg::auto_elevatorFeedback::TAKE_THE_ELEVATOR;
-                      feedback_.feedback_text = "take the elevator";
-                      as_.publishFeedback(feedback_);
-
-                      state_ = OUTOF_ELEVATOR;
                   }
                   else{
-                      ROS_INFO_ONCE("---Ride in an elevator---");
-                      DETECT_PLANNER_LOG("---Ride in an elevator---");
-                      ROS_INFO_ONCE("current floor is %d, target floor is %d", current_floor, target_floor);
-                      state_ = INELE_ANGLE_ADJ;
+                      state_ = NAV_TAKE;
                   }
+              }
+              else{
+                      /*if (doorCanstand_)
+                      {
+                          state_ = NAV_DOOR;
+                          isPublishGoal_ = false;
+                          isUpdateNaviState_ = false;
+                          isJudged_ = false;
+                      } else */{
+                          state_ = RETURN_WAIT_AREA;
+                          isPublishGoal_ = false;
+                          isUpdateNaviState_ = false;
+                          isJudged_ = false;
+                      }
+              }
+              break;
+          }
+          case RETURN_WAIT_AREA: {
+              feedback_.feedback = robot_msg::auto_elevatorFeedback::ENTER_ELEVATOR;
+              feedback_.feedback_text = "navi to wait point";
+              as_.publishFeedback(feedback_);
+
+              if (!isPublishGoal_)
+              {
+                  target_pose.header.frame_id = map_frame_;
+                  target_pose.pose = waitPoint;
+                  goal_pub_.publish(target_pose);
+                  ROS_INFO("publish wait point");
+                  isPublishGoal_ = true;
+              }
+
+              naviStateFeedback_ = navi_state_.feedback;
+              if ((naviStateFeedback_ == 100) || (naviStateFeedback_ == 103) ) // in planning or controlling 
+              {
+                  isUpdateNaviState_ = true;
+              }
+
+              naviStateFeedback_ = navi_state_.feedback;
+              if (navi_state_.feedback == 104 && isUpdateNaviState_)
+              {
+                  ROS_INFO("into elevator failed");
+                  feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE; //TODO: 这里可以返回满员，但是不知道userlogic有没有处理
+                  feedback_.feedback_text = "failure full, return waiting point";
+                  as_.publishFeedback(feedback_);
+                  state_ = NAV_TAKE;
+                  isPublishGoal_ = false;
+                  isUpdateNaviState_ = false;
+                  return  false;
+              } else if (navi_state_.feedback == 101 || navi_state_.feedback == 102){
+                  double distanceRtoW;
+                  distanceRtoW = Distance(carto_pose_.pose, waitPoint);
+                  if (distanceRtoW > 2 * robotRadius_)
+                  {
+                      actionlib_msgs::GoalID  goalCancel;
+                      goal_cancel_pub_.publish(goalCancel);
+                      ROS_INFO("into elevator failed");
+                      feedback_.feedback = robot_msg::auto_elevatorFeedback::FAILURE;//TODO: 这里可以返回满员，但是不知道userlogic有没有处理
+                      feedback_.feedback_text = "failure full, return waiting point";
+                      as_.publishFeedback(feedback_);
+                      state_ = NAV_TAKE;
+                      isPublishGoal_ = false;
+                      isUpdateNaviState_ = false;
+                      return  false;
+                  }
+                  state_ = RETURN_WAIT_AREA;
+              } else{
+                  state_ = RETURN_WAIT_AREA;
+              }
+              break;
+          }
+          case TAKE: {
+              ROS_INFO_ONCE("---Ride in an elevator---");
+              feedback_.feedback = robot_msg::auto_elevatorFeedback::TAKE_THE_ELEVATOR;
+              feedback_.feedback_text = "enter success ,take the elevator";
+              as_.publishFeedback(feedback_);
+              state_ = TAKE;
+
+              if (!mode) {
+                state_ = NAV_OUT;
+                isPublishGoal_ = false;
+                isUpdateNaviState_ = false;
               }
               ros::spinOnce();
               break;
           }
-          case OUTOF_ELEVATOR: {
+          case NAV_OUT: {
               //出电梯
-              DETECT_PLANNER_LOG("OUTOF_ELEVATOR");
               feedback_.feedback = robot_msg::auto_elevatorFeedback::GET_OUT_ELEVATOR;
               feedback_.feedback_text = "get out elevator";
               as_.publishFeedback(feedback_);
-              go_forward = farCango;
-              if (!go_forward) {
-                  if (distance > dp2) {
-                      publishZeroVelocity();
-                      ROS_INFO_ONCE("part6 out elevator,goal2 distance =  %.2f goal distance= %.2f", distance2,distance);
-                      ROS_INFO("detect planner end in advance");
-                      DETECT_PLANNER_LOG("detect planner end in advance");
-                      feedback_.feedback = robot_msg::auto_elevatorFeedback::SUCCESS;
-                      feedback_.feedback_text = "detect planner success!";
-                      as_.publishFeedback(feedback_);
-                  } else {
-                      publishZeroVelocity();
-                      ROS_INFO("please move your body");
-                  }
-              } else {
-                  global_pose = carto_data_.pose;
-                  distance = Distance(global_pose,takePoint); // 机器人距离乘梯点的距离
-                  distance2 = Distance(global_pose,waitPoint); // 机器人距离候梯点的距离
-                  ROS_INFO_ONCE("part6 out elevator,goal2 distance =  %.2f", distance2);
-                  angle_diff = normalizeAngle(updateAngleDiff(carto_data_, waitPoint), -M_PI, M_PI);
-                  double k1, k2, b1, b2;
-                  k1 = 0.25;
-                  k2 = 1.5;
-                  b1 = 0.05;
-                  b2 = 0.05;
-                  if (distance2 < (totalDistance - dp2) && distance > dp2) {
-                      intoDone = false;
-                  }
-                  if (distance2 > toleranceDistance && distance < (totalDistance - toleranceDistance)) {
-                      if (fabs(angle_diff) > 0.05 && fabs(angle_diff) < 0.5) {
-                          cmd_vel.angular.z = (angle_diff / 2);
-                      } else {
-                          cmd_vel.angular.z = angle_diff;
-                      }
-                      if (distance >= 0 && distance <= 1.2)
-                      {
-                          cmd_vel.linear.x = k1 * distance + b1;
-                      }
-                      else if (distance > 1.2 && distance <= (totalDistance - 0.2))
-                      {
-                          cmd_vel.linear.x = 0.35;
-                      }
-                      else if (distance > (totalDistance - 0.2) && distance2 < 0.2 && distance2 >= toleranceDistance)
-                      {
-                          cmd_vel.linear.x = k2 * distance2 + b2;
-                      }
-                      else if (distance2 < toleranceDistance || distance > (totalDistance - toleranceDistance))
-                      {
-                          cmd_vel.linear.x = 0;
-                          publishZeroVelocity();
-                      }
-                      this->vel_pub_.publish(cmd_vel);
-                  } else if (distance2 <= toleranceDistance || distance >= (totalDistance - toleranceDistance)) {
-                      publishZeroVelocity();
-                      ROS_INFO("detect planner end");
-                      DETECT_PLANNER_LOG("detect planner end");
-                      feedback_.feedback = robot_msg::auto_elevatorFeedback::SUCCESS;
-                      feedback_.feedback_text = "detect planner success!";
-                      as_.publishFeedback(feedback_);
 
-                      return true;
-                  }
+              if (!isPublishGoal_)
+              {
+                  target_pose.header.frame_id = map_frame_;
+                  target_pose.pose = waitPoint;
+                  geometry_msgs::Quaternion temp_q = tf::createQuaternionMsgFromYaw(angle_T_to_W_);
+                  target_pose.pose.orientation = temp_q;
+                  goal_pub_.publish(target_pose);
+                  ROS_INFO("publish wait point");
+                  isPublishGoal_ = true;
               }
-              ros::spinOnce();
-              break;
+
+              naviStateFeedback_ = navi_state_.feedback;
+              if ((naviStateFeedback_ == 100) || (naviStateFeedback_ == 103) ) // in planning or controlling 
+              {
+                  isUpdateNaviState_ = true;
+              }
+
+              if (navi_state_.feedback == 104 && isUpdateNaviState_)
+              {
+                ROS_INFO("detect planner end in advance");
+                isPublishGoal_ = false;
+                state_ = NAV_TAKE;
+                feedback_.feedback = robot_msg::auto_elevatorFeedback::SUCCESS;
+                feedback_.feedback_text = "out elevator success";
+                as_.publishFeedback(feedback_);
+                return true;
+              } 
+              
+              double distanceRtoW;
+              distanceRtoW = Distance(carto_pose_.pose, waitPoint);
+              if (distanceRtoW < 2 * robotRadius_)
+              {
+                  ROS_INFO("detect planner end in advance， nearby");
+                  isPublishGoal_ = false;
+                  state_ = NAV_TAKE;
+                  feedback_.feedback = robot_msg::auto_elevatorFeedback::SUCCESS;
+                  feedback_.feedback_text = "out elevator success";
+                  as_.publishFeedback(feedback_);
+                  return true;
+              } 
+              /*else if (navi_state_.feedback == 101 || navi_state_.feedback == 102){
+                  
+                  state_ = NAV_OUT;
+              } else*/{
+                  state_ = NAV_OUT;
+              }
+
+            ros::spinOnce();
+            break;
           }
           default: {
-              as_.setAborted(result_ ,"failure, ento default state");
+              as_.setAborted(result_ ,"failure, enter default state");
               return false;//退出程序
           }
       }
@@ -544,8 +480,41 @@ namespace detect_planner {
   }
   void DetectPlanner::turnAngle(double angle)
   {
+      sensor_msgs::Imu imu_start;
+    {
+        boost::mutex::scoped_lock lock(this->imu_mutex_);
+        imu_start =  imu_data_;
+    }
+
+      double angle_start = tf::getYaw(imu_start.orientation);
+      double angle_diff = 0;
+      sensor_msgs::Imu imu_now;
+      double angle_speed = angle > 0 ? 0.1 : -0.1;
+      geometry_msgs::Twist cmd_vel;
+      cmd_vel.linear.x = 0.0;
+      cmd_vel.linear.y = 0.0;
+      cmd_vel.angular.z = angle_speed;
+
+      ros::Rate r(10);
+      while(fabs(angle_diff) < std::fabs(angle))
+      {
+          {
+              boost::mutex::scoped_lock lock(this->imu_mutex_);
+              imu_now = imu_data_;
+          }
+          double angle_now = tf::getYaw(imu_data_.orientation);
+          angle_diff = std::fabs(angle_now - angle_start);
+          angle_diff = normalizeAngle(angle_diff, -M_PI, M_PI);
+          vel_pub_.publish(cmd_vel);
+          ros::spinOnce();
+          r.sleep();
+
+      }
+      ROS_INFO("turn angle end");
+      return;
+/***********************
     ros::Rate r(10);
-    double angle_speed = 0.2;
+    double angle_speed = 0.1;
     double angle_duration = (angle / 360 * 2 * pi) / angle_speed;
     int ticks = int(angle_duration * 10);
     geometry_msgs::Twist cmd_vel;
@@ -561,6 +530,7 @@ namespace detect_planner {
     cmd_vel.angular.z = 0.0;
     vel_pub_.publish(cmd_vel);
     return ;
+    *****************/
   }
   double DetectPlanner::updateAngleDiff(robot_msg::SlamStatus carto, geometry_msgs::Pose goal)
   {
@@ -600,19 +570,43 @@ namespace detect_planner {
     cmd_vel.linear.x = 0.0;
     vel_pub_.publish(cmd_vel);
   }
-  void DetectPlanner::movebaseCancelCallback(const actionlib_msgs::GoalID::ConstPtr &msg)
-  {
-    boost::mutex::scoped_lock lock(this->cancle_mutex_);
-    move_base_cancel_ = true;
-    publishZeroVelocity();
-    DETECT_PLANNER_LOG("detect planner cancle");
-    return;
+//   void DetectPlanner::movebaseCancelCallback(const actionlib_msgs::GoalID::ConstPtr &msg)
+//   {
+//     boost::mutex::scoped_lock lock(this->cancle_mutex_);
+//     move_base_cancel_ = true;
+//     publishZeroVelocity();
+//     DETECT_PLANNER_LOG("detect planner cancle");
+//     return;
+//   }
+
+  void DetectPlanner::naviStateCallback(const robot_msg::FeedBackConstPtr &msg) {
+      ROS_INFO_ONCE("navigation state recevied");
+      boost::mutex::scoped_lock lock(this->navi_state_mutex_);
+      this->navi_state_ = *msg;
   }
+
+  void DetectPlanner::elevatorStateCallback(const robot_msg::ElevatorStateConstPtr &msg) {
+      ROS_INFO_ONCE("elevator state recevied");
+      boost::mutex::scoped_lock  lock(this->ele_state_mutex_);
+      this->elevator_state_ = *msg;
+  }
+
   void DetectPlanner::cartoCallback(const robot_msg::SlamStatus::ConstPtr &msg)
   {
     ROS_INFO_ONCE("carto data recevied");
     boost::mutex::scoped_lock lock(this->carto_mutex_);
-    this->carto_data_ = *msg;
+    this->carto_pose_ = *msg;
+  }
+  void DetectPlanner::imuCallback(const sensor_msgs::Imu::ConstPtr &msg)
+  {
+      boost::mutex::scoped_lock lock(this->imu_mutex_);
+      this->imu_data_ = *msg;
+  }
+
+  void DetectPlanner::odomCallback(const nav_msgs::Odometry::ConstPtr &msg)
+  {
+      boost::mutex::scoped_lock lock(this->odom_mutex_);
+      this->odom_data_ = *msg;
   }
   void DetectPlanner::getLaserTobaselinkTF(std::string sensor_frame, std::string base_frame)
   {
