@@ -42,9 +42,9 @@ namespace detect_planner
       ph_.param<std::string>("base_frame", base_frame_, std::string("base_link"));
       ph_.param<std::string>("laser_frame", laser_frame_, std::string("laser"));
       ph_.param<std::string>("map_frame", map_frame_, std::string("map"));
-      ph_.param<double>("elevatorLong", elevatorLong_, double(1.6));
-      ph_.param<double>("elevatorWide", elevatorWide_, double(2.0));
-      ph_.param<double>("robotRadius", robotRadius_, double(0.225));
+      ph_.param<double>("elevatorLong", elevatorLong_, double(1.5));
+      ph_.param<double>("elevatorWide", elevatorWide_, double(1.5));
+      ph_.param<double>("robotRadius", robotRadius_, double(0.25));
 
       while (ros::ok() && !ph_.hasParam("elevatorLong") && !move_base_cancel_)
       {
@@ -121,11 +121,13 @@ namespace detect_planner
     recovery_can_clear_costmap_ = true;
     enter_try_cnt = 0;
 
-    toleranceDistance_ = 0.2;  //TODO: 这个为了安全起见，先设置为0.2， default:0.1
+    toleranceDistance_ = 0.15;  //TODO: 这个为了安全起见，先设置为0.2， default:0.1
     // 这里的距离为与take point的距离，暂时默认take point就处在电梯的中心
-    d_inside_elevator_ = (elevatorLong_ / 2.0) - robotRadius_ - toleranceDistance_;      //用于判断是否在电梯里面的距离
+    d_inside_face_door_front_L_ = (elevatorLong_ / 2.0) - robotRadius_ - toleranceDistance_;      //用于判断是否在电梯里面的距离,机器人面向电梯门离中心距离
+    d_inside_face_door_back_L_ = (elevatorLong_ / 2.0) - robotRadius_ + toleranceDistance_;      //用于判断是否在电梯里面的距离
     d_outside_elevator_ = (elevatorLong_ / 2.0) + robotRadius_ + toleranceDistance_ * 2; //用于判断是否在电梯外面的距离
-    printf("d_inside_elevator_: %f, d_outside_elevator_: %f\n", d_inside_elevator_, d_outside_elevator_);
+    d_inside_elevator_W_ = (elevatorWide_ / 2.0) - robotRadius_ + toleranceDistance_;      //用于判断是否在电梯里面的距离
+    ROS_INFO("d_inside_face_door_front_L_: %f, d_inside_face_door_back_L_: %f, d_outside_elevator_: %f, d_inside_elevator_W_: %f", d_inside_face_door_front_L_, d_inside_face_door_back_L_, d_outside_elevator_, d_inside_elevator_W_);
 
     takePoint = goal->takepose;
     waitPoint = goal->waitpose;
@@ -169,22 +171,58 @@ namespace detect_planner
     client_enalbe_recovery_.call(srv_enalbe_recovery_);
     temp_conf.bools.clear();
 
-    int_param_.name = "combination_method";
-    int_param_.value = 0; // 0 for overwrite; 1 for maximum
+    int_param_.name = "max_cycles"; //       
+    int_param_.value = 200; //
     // dynamic_reconfigure::Config temp_conf;
     temp_conf.ints.push_back(int_param_);
+    bool_param_.name = "enable_max_cycles";
+    bool_param_.value = true;
+    temp_conf.bools.push_back(bool_param_);
     srv_req_.config = temp_conf;
-    ros::service::call("/move_base/global_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
-    ros::service::call("/move_base/local_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+    ros::service::call("/move_base/GlobalPlanner/set_parameters", srv_req_, srv_resp_);
     temp_conf.ints.clear();
+    temp_conf.bools.clear();
 
-    // disable obstacle layer in global costmap
+    double_param_.name = "default_tolerance";
+    if(state_ == NAV_TAKE)
+    {
+      double_param_.value = 0.4;
+    }
+    else
+    {
+      double_param_.value = 1.0;
+    }
+    temp_conf.doubles.push_back(double_param_);
+    srv_req_.config = temp_conf;
+    ros::service::call("/move_base/GlobalPlanner/set_parameters", srv_req_, srv_resp_);
+    temp_conf.doubles.clear();
+
+    // disable depth layer in global costmap
     bool_param_.name = "enabled";
     bool_param_.value = false;
     temp_conf.bools.push_back(bool_param_);
     srv_req_.config = temp_conf;
-    ros::service::call("/move_base/global_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+    ros::service::call("/move_base/local_costmap/depth_layer/set_parameters", srv_req_, srv_resp_);
     temp_conf.bools.clear();
+
+    // TODO: commit for debug
+    // int_param_.name = "combination_method";
+    // int_param_.value = 0; // 0 for overwrite; 1 for maximum
+    // // dynamic_reconfigure::Config temp_conf;
+    // temp_conf.ints.push_back(int_param_);
+    // srv_req_.config = temp_conf;
+    // ros::service::call("/move_base/global_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+    // ros::service::call("/move_base/local_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+    // temp_conf.ints.clear();
+
+    // TODO: commit for debug
+    // disable obstacle layer in global costmap
+    // bool_param_.name = "enabled";
+    // bool_param_.value = false;
+    // temp_conf.bools.push_back(bool_param_);
+    // srv_req_.config = temp_conf;
+    // ros::service::call("/move_base/global_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+    // temp_conf.bools.clear();
 
     uint8_t feedback_last = robot_msg::auto_elevatorFeedback::NONE;
 
@@ -270,20 +308,43 @@ namespace detect_planner
         client_enalbe_recovery_.call(srv_enalbe_recovery_);
         temp_conf.bools.clear();
 
-        int_param_.value = 1; // 0 for overwrite; 1 for maximum
-        // dynamic_reconfigure::Config temp_conf;
-        temp_conf.ints.push_back(int_param_);
+        bool_param_.name = "enable_max_cycles";
+        bool_param_.value = false;
+        temp_conf.bools.push_back(bool_param_);
         srv_req_.config = temp_conf;
-        ros::service::call("/move_base/global_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
-        ros::service::call("/move_base/local_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
-        temp_conf.ints.clear();
+        ros::service::call("/move_base/GlobalPlanner/set_parameters", srv_req_, srv_resp_);
+        temp_conf.bools.clear();
 
+        double_param_.name = "default_tolerance";
+        double_param_.value = 0.5;
+        temp_conf.doubles.push_back(double_param_);
+        srv_req_.config = temp_conf;
+        ros::service::call("/move_base/GlobalPlanner/set_parameters", srv_req_, srv_resp_);
+        temp_conf.doubles.clear();
+
+        // enable depth layer in global costmap
         bool_param_.name = "enabled";
         bool_param_.value = true;
         temp_conf.bools.push_back(bool_param_);
         srv_req_.config = temp_conf;
-        ros::service::call("/move_base/global_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+        ros::service::call("/move_base/local_costmap/depth_layer/set_parameters", srv_req_, srv_resp_);
         temp_conf.bools.clear();
+
+        // TODO: commit for debug
+        // int_param_.value = 1; // 0 for overwrite; 1 for maximum
+        // // dynamic_reconfigure::Config temp_conf;
+        // temp_conf.ints.push_back(int_param_);
+        // srv_req_.config = temp_conf;
+        // ros::service::call("/move_base/global_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+        // ros::service::call("/move_base/local_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+        // temp_conf.ints.clear();
+
+        // bool_param_.name = "enabled";
+        // bool_param_.value = true;
+        // temp_conf.bools.push_back(bool_param_);
+        // srv_req_.config = temp_conf;
+        // ros::service::call("/move_base/global_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+        // temp_conf.bools.clear();
 
         return;
       }
@@ -301,20 +362,43 @@ namespace detect_planner
         client_enalbe_recovery_.call(srv_enalbe_recovery_);
         temp_conf.bools.clear();
 
-        int_param_.value = 1; // 0 for overwrite; 1 for maximum
-        // dynamic_reconfigure::Config temp_conf;
-        temp_conf.ints.push_back(int_param_);
+        bool_param_.name = "enable_max_cycles";
+        bool_param_.value = false;
+        temp_conf.bools.push_back(bool_param_);
         srv_req_.config = temp_conf;
-        ros::service::call("/move_base/global_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
-        ros::service::call("/move_base/local_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
-        temp_conf.ints.clear();
+        ros::service::call("/move_base/GlobalPlanner/set_parameters", srv_req_, srv_resp_);
+        temp_conf.bools.clear();
 
+        double_param_.name = "default_tolerance";
+        double_param_.value = 0.5;
+        temp_conf.doubles.push_back(double_param_);
+        srv_req_.config = temp_conf;
+        ros::service::call("/move_base/GlobalPlanner/set_parameters", srv_req_, srv_resp_);
+        temp_conf.doubles.clear();
+
+        // enable depth layer in global costmap
         bool_param_.name = "enabled";
         bool_param_.value = true;
         temp_conf.bools.push_back(bool_param_);
         srv_req_.config = temp_conf;
-        ros::service::call("/move_base/global_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+        ros::service::call("/move_base/local_costmap/depth_layer/set_parameters", srv_req_, srv_resp_);
         temp_conf.bools.clear();
+
+        // TODO: commit for debug
+        // int_param_.value = 1; // 0 for overwrite; 1 for maximum
+        // // dynamic_reconfigure::Config temp_conf;
+        // temp_conf.ints.push_back(int_param_);
+        // srv_req_.config = temp_conf;
+        // ros::service::call("/move_base/global_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+        // ros::service::call("/move_base/local_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+        // temp_conf.ints.clear();
+
+        // bool_param_.name = "enabled";
+        // bool_param_.value = true;
+        // temp_conf.bools.push_back(bool_param_);
+        // srv_req_.config = temp_conf;
+        // ros::service::call("/move_base/global_costmap/obstacle_layer/set_parameters", srv_req_, srv_resp_);
+        // temp_conf.bools.clear();
 
         return;
       }
@@ -387,18 +471,33 @@ namespace detect_planner
     }
   }
 
-  void DetectPlanner::searchNearby(geometry_msgs::PoseStamped start_pose, geometry_msgs::PoseStamped target_base_pose, double yaw_angle, float offset_array[][2], int offset_array_size, geometry_msgs::PoseStamped &success_pose, bool &success_or_not)
+  void DetectPlanner::searchNearby(geometry_msgs::PoseStamped start_pose, geometry_msgs::PoseStamped target_base_pose, double tolerance, geometry_msgs::PoseStamped &success_pose, bool &success_or_not)
   {
     success_or_not = false;
+
+    int_param_.name = "max_cycles"; //       
+    int_param_.value = 200; //
+    dynamic_reconfigure::Config temp_conf;
+    temp_conf.ints.push_back(int_param_);
+    bool_param_.name = "enable_max_cycles";
+    bool_param_.value = true;
+    temp_conf.bools.push_back(bool_param_);
+    srv_req_.config = temp_conf;
+    ros::service::call("/move_base/GlobalPlanner/set_parameters", srv_req_, srv_resp_);
+    temp_conf.ints.clear();
+    temp_conf.bools.clear();
+
     geometry_msgs::PoseStamped search_pose;
     srv_getplan_.request.start = start_pose;
-    for (int tempi = 0; tempi < offset_array_size; ++tempi)
+    // for (int tempi = 0; tempi < offset_array_size; ++tempi)
     {
+      // std::cout << target_base_pose << std::endl;
+      printf("target_base_pose:(%f, %f)\n", target_base_pose.pose.position.x, target_base_pose.pose.position.y);
       search_pose = target_base_pose;
-      search_pose.pose.position.x += (offset_array[tempi][0] * std::cos(yaw_angle) - offset_array[tempi][1] * std::sin(yaw_angle));
-      search_pose.pose.position.y += (offset_array[tempi][0] * std::sin(yaw_angle) + offset_array[tempi][1] * std::cos(yaw_angle));
+      // search_pose.pose.position.x += (offset_array[tempi][0] * std::cos(yaw_angle) - offset_array[tempi][1] * std::sin(yaw_angle));
+      // search_pose.pose.position.y += (offset_array[tempi][0] * std::sin(yaw_angle) + offset_array[tempi][1] * std::cos(yaw_angle));
       srv_getplan_.request.goal = search_pose;
-      srv_getplan_.request.tolerance = 0.2;
+      srv_getplan_.request.tolerance = tolerance;
       if (client_getplan_.call(srv_getplan_))
       {
         // std::cout << srv_getplan_.response.plan;
@@ -407,16 +506,18 @@ namespace detect_planner
         {
           // target not arrivable
           ROS_INFO("make plan fail!!");
-          continue;
+          // continue;
         }
         else
         {
           // make available plan
           ROS_INFO("make plan successfully!");
           // std::cout << search_pose;
-          success_pose = search_pose;
+          success_pose = srv_getplan_.response.plan.poses[srv_getplan_.response.plan.poses.size() - 1];//search_pose;
+          // std::cout << success_pose << std::endl;
+          printf("success_pose:(%f, %f)\n", success_pose.pose.position.x, success_pose.pose.position.y);
           success_or_not = true;
-          break;
+          // break;
         }
       }
       else
@@ -424,9 +525,17 @@ namespace detect_planner
         ROS_INFO("call make plan fail!!");
         actionlib_msgs::GoalID goalCancel;
         goal_cancel_pub_.publish(goalCancel);
-        break;
+        // break;
       }
     }
+
+    bool_param_.name = "enable_max_cycles";
+    bool_param_.value = false;
+    temp_conf.bools.push_back(bool_param_);
+    srv_req_.config = temp_conf;
+    ros::service::call("/move_base/GlobalPlanner/set_parameters", srv_req_, srv_resp_);
+    temp_conf.bools.clear();
+
   }
 
   bool DetectPlanner::runPlan(geometry_msgs::Pose takePoint, geometry_msgs::Pose waitPoint, bool mode)
@@ -523,9 +632,20 @@ namespace detect_planner
       if (!isPublishGoal_)
       {
 
+        double take_to_robot_x = carto_pose_.pose.position.x - takePoint.position.x;
+        double take_to_robot_y = carto_pose_.pose.position.y - takePoint.position.y;
+        double take_to_wait_x = waitPoint.position.x - takePoint.position.x;
+        double take_to_wait_y = waitPoint.position.y - takePoint.position.y;
+        double dot_product = take_to_robot_x * take_to_wait_x + take_to_robot_y * take_to_wait_y;
+        dot_product /= Distance(waitPoint, takePoint);
+        double cross_product_abs = std::abs(take_to_robot_x * take_to_wait_y - take_to_robot_y * take_to_wait_x);
+        cross_product_abs /= Distance(waitPoint, takePoint);
+
         double distanceRto = Distance(carto_pose_.pose, takePoint);
-        printf("distanceRto: %f, d_inside_elevator_: %f\n", distanceRto, d_inside_elevator_);
-        if (distanceRto < d_inside_elevator_) //机器人身子已进入电梯，0.1为容错, 距离waitpoint小于1m，认为已经进入电梯
+        ROS_INFO("dot_product: %f, cross_product_abs: %f", dot_product, cross_product_abs);
+        if((dot_product < d_inside_face_door_front_L_)
+        && (dot_product > -d_inside_face_door_back_L_)
+        && (cross_product_abs < d_inside_elevator_W_))//机器人身子已进入电梯
         {
           actionlib_msgs::GoalID goalCancel;
           goal_cancel_pub_.publish(goalCancel);
@@ -558,14 +678,16 @@ namespace detect_planner
         geometry_msgs::Quaternion temp_q = tf::createQuaternionMsgFromYaw(angle_T_to_W_);
         target_pose.pose.orientation = temp_q;
         bool get_result = false;
-        geometry_msgs::PoseStamped success_pose;
+        geometry_msgs::PoseStamped success_pose = target_pose;
         int offset_takePoint_length = sizeof(offset_takePoint) / sizeof(offset_takePoint[0]);
-        searchNearby(start_pose, target_pose, angle_W_to_T_, offset_takePoint, offset_takePoint_length, success_pose, get_result);
-        // std::cout << "success_pose:" << success_pose;
-        if (get_result)
+        // ROS_INFO("START");
+        // searchNearby(start_pose, target_pose, 0.5, success_pose, get_result);
+        // ROS_INFO("STOP");
+        // // std::cout << "success_pose:" << success_pose;
+        // if (get_result)
         {
-          searchNearby(start_pose, target_pose, angle_W_to_T_, offset_takePoint, offset_takePoint_length, success_pose, get_result);
-          if (get_result)
+          // searchNearby(start_pose, target_pose, angle_W_to_T_, offset_takePoint, offset_takePoint_length, success_pose, get_result);
+          // if (get_result)
           {
             goal_pub_.publish(success_pose);
             ROS_INFO("Publish take point");
@@ -574,12 +696,12 @@ namespace detect_planner
             // enter_try_cnt = 0;
           }
         }
-        else
-        {
-          ++enter_try_cnt;
-          printf("wait 0.15s, enter_try_cnt: %d\n", enter_try_cnt);
-          ros::Duration(0.15).sleep();
-        }
+        // else
+        // {
+        //   ++enter_try_cnt;
+        //   printf("wait 0.15s, enter_try_cnt: %d\n", enter_try_cnt);
+        //   ros::Duration(0.15).sleep();
+        // }
       }
 
       naviStateFeedback_ = navi_state_.feedback;
@@ -619,8 +741,20 @@ namespace detect_planner
         else if (naviStateFeedback_ == 101 || naviStateFeedback_ == 102 || naviStateFeedback_ == 106 || naviStateFeedback_ == 107)
         {
           printf("naviStateFeedback_: %d\n", naviStateFeedback_);
+          double take_to_robot_x = carto_pose_.pose.position.x - takePoint.position.x;
+          double take_to_robot_y = carto_pose_.pose.position.y - takePoint.position.y;
+          double take_to_wait_x = waitPoint.position.x - takePoint.position.x;
+          double take_to_wait_y = waitPoint.position.y - takePoint.position.y;
+          double dot_product = take_to_robot_x * take_to_wait_x + take_to_robot_y * take_to_wait_y;
+          dot_product /= Distance(waitPoint, takePoint);
+          double cross_product_abs = std::abs(take_to_robot_x * take_to_wait_y - take_to_robot_y * take_to_wait_x);
+          cross_product_abs /= Distance(waitPoint, takePoint);
+
           double distanceRto = Distance(carto_pose_.pose, takePoint);
-          if (distanceRto < d_inside_elevator_) //机器人身子已进入电梯，0.1为容错, 距离waitpoint小于1m，认为已经进入电梯
+          ROS_INFO("dot_product: %f, cross_product_abs: %f", dot_product, cross_product_abs);
+          if((dot_product < d_inside_face_door_front_L_)
+          && (dot_product > -d_inside_face_door_back_L_)
+          && (cross_product_abs < d_inside_elevator_W_))//机器人身子已进入电梯
           {
             actionlib_msgs::GoalID goalCancel;
             goal_cancel_pub_.publish(goalCancel);
@@ -667,8 +801,21 @@ namespace detect_planner
 
           }
         }
+
+        double take_to_robot_x = carto_pose_.pose.position.x - takePoint.position.x;
+        double take_to_robot_y = carto_pose_.pose.position.y - takePoint.position.y;
+        double take_to_wait_x = waitPoint.position.x - takePoint.position.x;
+        double take_to_wait_y = waitPoint.position.y - takePoint.position.y;
+        double dot_product = take_to_robot_x * take_to_wait_x + take_to_robot_y * take_to_wait_y;
+        dot_product /= Distance(waitPoint, takePoint);
+        double cross_product_abs = std::abs(take_to_robot_x * take_to_wait_y - take_to_robot_y * take_to_wait_x);
+        cross_product_abs /= Distance(waitPoint, takePoint);
+
         double distanceRto = Distance(carto_pose_.pose, takePoint);
-        if (distanceRto < d_inside_elevator_) //机器人身子已进入电梯，0.1为容错, 距离waitpoint小于1m，认为已经进入电梯
+        // ROS_INFO("dot_product: %f, cross_product_abs: %f", dot_product, cross_product_abs);
+        if((dot_product < d_inside_face_door_front_L_)
+        && (dot_product > -d_inside_face_door_back_L_)
+        && (cross_product_abs < d_inside_elevator_W_))//机器人身子已进入电梯
         {
           ROS_INFO("into elevator door stand success, nearby");
 
@@ -820,11 +967,16 @@ namespace detect_planner
 
       if (!isPublishGoal_)
       {
+        double take_to_robot_x = carto_pose_.pose.position.x - takePoint.position.x;
+        double take_to_robot_y = carto_pose_.pose.position.y - takePoint.position.y;
+        double take_to_wait_x = waitPoint.position.x - takePoint.position.x;
+        double take_to_wait_y = waitPoint.position.y - takePoint.position.y;
+        double dot_product = take_to_robot_x * take_to_wait_x + take_to_robot_y * take_to_wait_y;
+        dot_product /= Distance(waitPoint, takePoint);
 
-        double distanceRtoW = Distance(carto_pose_.pose, waitPoint);
-        double distanceRtoT = Distance(carto_pose_.pose, takePoint);
-        printf("distanceRtoW: %f, distanceRtoT: %f\n", distanceRtoW, distanceRtoT);
-        if ((distanceRtoW < 1.0) && (distanceRtoT > d_outside_elevator_))
+        double distanceRto = Distance(carto_pose_.pose, takePoint);
+        ROS_INFO("dot_product: %f, distanceRto: %f, d_outside_elevator_: %f", dot_product, distanceRto, d_outside_elevator_);
+        if((dot_product > 0) && (distanceRto > d_outside_elevator_))
         {
           if (state_ == RETURN_WAIT_AREA)
           {
@@ -872,13 +1024,15 @@ namespace detect_planner
         target_pose.pose.orientation = temp_q;
 
         bool get_result = false;
-        geometry_msgs::PoseStamped success_pose;
-        int offset_waitPoint_length = sizeof(offset_waitPoint) / sizeof(offset_waitPoint[0]);
-        searchNearby(start_pose, target_pose, angle_W_to_T_, offset_waitPoint, offset_waitPoint_length, success_pose, get_result);
-        if (get_result)
+        geometry_msgs::PoseStamped success_pose = target_pose;
+        // int offset_waitPoint_length = sizeof(offset_waitPoint) / sizeof(offset_waitPoint[0]);
+        // ROS_INFO("START");
+        // searchNearby(start_pose, target_pose, 0.5, success_pose, get_result);
+        // ROS_INFO("STOP");
+        // if (get_result)
         {
-          searchNearby(start_pose, target_pose, angle_W_to_T_, offset_waitPoint, offset_waitPoint_length, success_pose, get_result);
-          if (get_result)
+          // searchNearby(start_pose, target_pose, angle_W_to_T_, offset_waitPoint, offset_waitPoint_length, success_pose, get_result);
+          // if (get_result)
           {
             goal_pub_.publish(success_pose);
             ROS_INFO("Publish wait point");
@@ -887,12 +1041,12 @@ namespace detect_planner
             // enter_try_cnt = 0;
           }
         }
-        else
-        {
-          ++enter_try_cnt;
-          printf("wait 0.15s, enter_try_cnt: %d\n", enter_try_cnt);
-          ros::Duration(0.15).sleep();
-        }
+        // else
+        // {
+        //   ++enter_try_cnt;
+        //   printf("wait 0.15s, enter_try_cnt: %d\n", enter_try_cnt);
+        //   ros::Duration(0.15).sleep();
+        // }
       }
 
       naviStateFeedback_ = navi_state_.feedback;
@@ -959,8 +1113,15 @@ namespace detect_planner
           printf("navigation fail, enter_try_cnt: %d\n", enter_try_cnt);
         }
 
+        double take_to_robot_x = carto_pose_.pose.position.x - takePoint.position.x;
+        double take_to_robot_y = carto_pose_.pose.position.y - takePoint.position.y;
+        double take_to_wait_x = waitPoint.position.x - takePoint.position.x;
+        double take_to_wait_y = waitPoint.position.y - takePoint.position.y;
+        double dot_product = take_to_robot_x * take_to_wait_x + take_to_robot_y * take_to_wait_y;
+        dot_product /= Distance(waitPoint, takePoint);
+
         double distanceRto = Distance(carto_pose_.pose, takePoint);
-        if (distanceRto > d_outside_elevator_)
+        if((dot_product > 0) && (distanceRto > d_outside_elevator_))
         {
           if (state_ == RETURN_WAIT_AREA)
           {

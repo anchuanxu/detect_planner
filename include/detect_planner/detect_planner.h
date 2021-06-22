@@ -104,7 +104,7 @@ namespace detect_planner
 
     double Distance(geometry_msgs::Pose PointA, geometry_msgs::Pose PointB);
 
-    void searchNearby(geometry_msgs::PoseStamped start_pose, geometry_msgs::PoseStamped target_base_pose, double yaw_angle, float offset_array[][2], int offset_array_size, geometry_msgs::PoseStamped &success_pose, bool &success_or_not);
+    void searchNearby(geometry_msgs::PoseStamped start_pose, geometry_msgs::PoseStamped target_base_pose, double tolerance, geometry_msgs::PoseStamped &success_pose, bool &success_or_not);
 
     double inline normalizeAngle(double val, double min, double max)
     {
@@ -131,7 +131,8 @@ namespace detect_planner
     double angle_W_to_T_; // angle frome wait point to take point
     double angle_T_to_W_; // angle frome take point to wait point
     bool recovery_can_clear_costmap_;
-    double d_inside_elevator_, d_outside_elevator_, toleranceDistance_;
+    double d_inside_face_door_front_L_, d_inside_face_door_back_L_, d_outside_elevator_, toleranceDistance_;
+    double d_inside_elevator_W_;
 
     //action
     ros::NodeHandle ah_, ph_;
@@ -196,6 +197,7 @@ namespace detect_planner
     dynamic_reconfigure::ReconfigureRequest srv_req_;
     dynamic_reconfigure::ReconfigureResponse srv_resp_;
     dynamic_reconfigure::IntParameter int_param_;
+    dynamic_reconfigure::DoubleParameter double_param_;
     // dynamic_reconfigure::Config conf_;
   };
 }; // namespace detect_planner
